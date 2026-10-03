@@ -1,0 +1,24 @@
+---
+# Adapted from oszuidwest/.github-templates for the combined runtime image.
+
+failure-threshold: warning
+
+ignored:
+  # Unpinned apt packages receive security updates on fresh builds.
+  - DL3008
+
+trustedRegistries:
+  - docker.io
+  - ghcr.io
+  - gcr.io
+  - mcr.microsoft.com
+  - quay.io
+
+override:
+  warning:
+    # Warn instead of error for missing version pins in pip
+    - DL3013
+
+  info:
+    # Info level for MAINTAINER deprecation (use LABEL instead)
+    - DL4000
