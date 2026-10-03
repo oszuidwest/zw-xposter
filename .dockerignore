@@ -9,4 +9,3 @@ poster/node_modules
 coverage.out
 **/*_test.go
 testdata
-docs
