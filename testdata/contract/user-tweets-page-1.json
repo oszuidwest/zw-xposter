@@ -1,0 +1,69 @@
+{
+  "data": {
+    "user": {
+      "result": {
+        "timeline_v2": {
+          "timeline": {
+            "instructions": [
+              {
+                "type": "TimelineAddEntries",
+                "entries": [
+                  {
+                    "entryId": "tweet-900000000000000101",
+                    "content": {
+                      "entryType": "TimelineTimelineItem",
+                      "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "tweet_results": {
+                          "result": {
+                            "rest_id": "900000000000000101",
+                            "core": {"user_results": {"result": {"core": {"screen_name": "fixture_account"}}}},
+                            "legacy": {
+                              "user_id_str": "100000000000000001",
+                              "full_text": "Newest article https://t.co/newest",
+                              "created_at": "Fri Oct 02 14:00:00 +0000 2026",
+                              "entities": {"urls": [{"expanded_url": "https://example.invalid/articles/newest"}]}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "tweet-900000000000000102",
+                    "content": {
+                      "entryType": "TimelineTimelineItem",
+                      "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "tweet_results": {
+                          "result": {
+                            "rest_id": "900000000000000102",
+                            "core": {"user_results": {"result": {"core": {"screen_name": "fixture_account"}}}},
+                            "legacy": {
+                              "user_id_str": "100000000000000001",
+                              "full_text": "Second article",
+                              "created_at": "Fri Oct 02 13:00:00 +0000 2026",
+                              "entities": {"urls": []}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "cursor-bottom-page-1",
+                    "content": {
+                      "entryType": "TimelineTimelineCursor",
+                      "cursorType": "Bottom",
+                      "value": "synthetic-page-2"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

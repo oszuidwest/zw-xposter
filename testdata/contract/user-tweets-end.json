@@ -1,0 +1,29 @@
+{
+  "data": {
+    "user": {
+      "result": {
+        "timeline_v2": {
+          "timeline": {
+            "instructions": [
+              {
+                "type": "TimelineAddEntries",
+                "entries": []
+              },
+              {
+                "type": "TimelineReplaceEntry",
+                "entry": {
+                  "entryId": "cursor-bottom-end",
+                  "content": {
+                    "entryType": "TimelineTimelineCursor",
+                    "cursorType": "Bottom",
+                    "value": "synthetic-end"
+                  }
+                }
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

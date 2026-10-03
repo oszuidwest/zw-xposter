@@ -1,0 +1,19 @@
+{
+  "posts": [
+    {
+      "id": "900000000000000101",
+      "url": "https://x.com/fixture_account/status/900000000000000101",
+      "text": "Newest article https://t.co/newest",
+      "urls": ["https://example.invalid/articles/newest"],
+      "createdAt": "2026-10-02T14:00:00.000Z"
+    },
+    {
+      "id": "900000000000000102",
+      "url": "https://x.com/fixture_account/status/900000000000000102",
+      "text": "Second article",
+      "urls": [],
+      "createdAt": "2026-10-02T13:00:00.000Z"
+    }
+  ],
+  "complete": true
+}

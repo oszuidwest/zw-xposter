@@ -1,0 +1,12 @@
+.git
+.github
+.env
+.env.*
+poster/node_modules
+**/debug
+*.log
+*.tmp
+coverage.out
+**/*_test.go
+testdata
+docs

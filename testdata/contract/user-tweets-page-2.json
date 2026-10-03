@@ -1,0 +1,48 @@
+{
+  "data": {
+    "user": {
+      "result": {
+        "timeline_v2": {
+          "timeline": {
+            "instructions": [
+              {
+                "type": "TimelineAddEntries",
+                "entries": [
+                  {
+                    "entryId": "tweet-900000000000000103",
+                    "content": {
+                      "entryType": "TimelineTimelineItem",
+                      "itemContent": {
+                        "itemType": "TimelineTweet",
+                        "tweet_results": {
+                          "result": {
+                            "rest_id": "900000000000000103",
+                            "core": {"user_results": {"result": {"core": {"screen_name": "fixture_account"}}}},
+                            "legacy": {
+                              "user_id_str": "100000000000000001",
+                              "full_text": "Older than the cutoff",
+                              "created_at": "Fri Oct 02 11:00:00 +0000 2026",
+                              "entities": {"urls": [{"expanded_url": "https://example.invalid/articles/old"}]}
+                            }
+                          }
+                        }
+                      }
+                    }
+                  },
+                  {
+                    "entryId": "cursor-bottom-page-2",
+                    "content": {
+                      "entryType": "TimelineTimelineCursor",
+                      "cursorType": "Bottom",
+                      "value": "synthetic-page-3"
+                    }
+                  }
+                ]
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

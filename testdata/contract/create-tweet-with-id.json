@@ -1,0 +1,12 @@
+{
+  "data": {
+    "create_tweet": {
+      "tweet_results": {
+        "result": {
+          "rest_id": "900000000000000601",
+          "core": {"user_results": {"result": {"core": {"screen_name": "fixture_account"}}}}
+        }
+      }
+    }
+  }
+}

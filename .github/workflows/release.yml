@@ -1,0 +1,71 @@
+---
+name: Release
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Existing combined-image version tag (vX.Y.Z or vX.Y.Z-prerelease)'
+        required: true
+
+permissions:
+  contents: read
+
+jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      value: ${{ steps.version.outputs.value }}
+    steps:
+      - name: Validate release version
+        id: version
+        env:
+          INPUT_VERSION: ${{ inputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          VERSION="${INPUT_VERSION:-$REF_NAME}"
+          VERSION="v${VERSION#v}"
+          if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Version must be an existing semver tag and cannot be edge."
+            exit 1
+          fi
+          echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+  security:
+    needs: version
+    uses: ./.github/workflows/docker-security.yml
+    with:
+      ref: ${{ needs.version.outputs.value }}
+    permissions:
+      contents: read
+      security-events: write
+
+  publish:
+    needs: [version, security]
+    uses: oszuidwest/.github-templates/.github/workflows/docker-publish.yml@v3
+    with:
+      version: ${{ needs.version.outputs.value }}
+      image-name: oszuidwest/zw-xposter
+      dockerfile-path: Dockerfile
+      image-labels: |
+        org.opencontainers.image.title=ZuidWest X Poster
+        org.opencontainers.image.description=Feed orchestrator and browser poster for ZuidWest
+        org.opencontainers.image.vendor=Streekomroep ZuidWest
+    permissions:
+      contents: read
+      packages: write
+
+  cleanup:
+    needs: publish
+    runs-on: ubuntu-latest
+    permissions:
+      packages: write
+    steps:
+      # Each rebuilt multi-platform image leaves unreferenced manifests behind.
+      - name: Delete orphaned images
+        uses: dataaxiom/ghcr-cleanup-action@v1
+        with:
+          packages: zw-xposter
+          validate: true

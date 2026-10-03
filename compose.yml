@@ -1,0 +1,39 @@
+---
+services:
+  xposter:
+    image: ghcr.io/oszuidwest/zw-xposter:latest
+    build: .
+    container_name: xposter
+    restart: unless-stopped
+    stop_grace_period: 30s
+    environment:
+      - X_USERNAME
+      - X_AUTH_TOKEN
+      - X_PASSWORD
+      - X_VERIFICATION
+      - HEADLESS
+      - SCREEN_SIZE
+      - WINDOW_SIZE
+      - BROWSER_LANGUAGES
+      - FEED_URL
+      - ALLOWED_HOSTS
+      - POLL_INTERVAL
+      - POST_DELAY
+      - MAX_AGE
+      - DRY_RUN
+      - HEARTBEAT_URL
+      - POSTER_NOT_READY_AFTER
+      - POLL_STALE_AFTER
+      - ALERT_REMINDER_INTERVAL
+      - GRAPH_TENANT_ID
+      - GRAPH_CLIENT_ID
+      - GRAPH_CLIENT_SECRET
+      - GRAPH_FROM_ADDRESS
+      - ALERT_RECIPIENTS
+    volumes:
+      - xposter-data:/data
+    # Chromium needs more shared memory than Docker's 64 MB default.
+    shm_size: 1gb
+
+volumes:
+  xposter-data:

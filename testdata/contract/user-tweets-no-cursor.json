@@ -1,0 +1,18 @@
+{
+  "data": {
+    "user": {
+      "result": {
+        "timeline_v2": {
+          "timeline": {
+            "instructions": [
+              {
+                "type": "TimelineAddEntries",
+                "entries": []
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}
