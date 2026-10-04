@@ -133,6 +133,17 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
   return { posts, oldestTopLevel, reachedEnd };
 }
 
+// X serves the own profile timeline under either operation name.
+const USER_TIMELINE_OPERATIONS = new Set(['UserTweets', 'UserOriginalsTimeline']);
+
+export function isUserTimelineResponse(responseURL) {
+  try {
+    return USER_TIMELINE_OPERATIONS.has(new URL(responseURL).pathname.split('/').pop());
+  } catch {
+    return false;
+  }
+}
+
 // Only parsed variables without a cursor establish the first UserTweets page.
 export function isFirstUserTweetsPage(responseURL) {
   try {
