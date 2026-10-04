@@ -1,10 +1,10 @@
 # zw-xposter
 
-Posts new [ZuidWest Update](https://www.zuidwestupdate.nl/) articles to [@zwupdate](https://x.com/zwupdate) with a link and their featured video, or an image for articles without video. Go polls RSS; Playwright posts through X. Both run in one Docker container.
+Posts new [ZuidWest Update](https://www.zuidwestupdate.nl/) articles to [@zwupdate](https://x.com/zwupdate), with video or an image. Go + Playwright in one Docker container.
 
 ## Setup
 
-Copy `.env.example` to `.env` and set `X_USERNAME` and `X_AUTH_TOKEN` (the `auth_token` cookie from x.com → DevTools → Application → Cookies).
+Copy [.env.example](.env.example) to `.env`. Set `X_USERNAME` and `X_AUTH_TOKEN` (x.com → DevTools → Application → Cookies → `auth_token`).
 
 ```sh
 cp .env.example .env
@@ -14,25 +14,21 @@ docker compose run --rm xposter /app/orchestrator -seed
 docker compose up -d
 ```
 
-Seed once to skip existing articles. Keep the `xposter-data` volume: it holds posting history and the browser session. Run one instance; stop it before one-off commands that use this volume. If state is lost or corrupt, check existing posts on X before reseeding.
+Seed once to skip existing articles. Run one instance and keep the `xposter-data` volume (posting history and browser session). Stop the service before one-off commands. If state is lost, check X before reseeding to avoid duplicates.
 
-Defaults: poll every two minutes, skip articles older than 24 hours. See [.env.example](.env.example) for settings, e-mail alerts and heartbeat monitoring.
+Defaults: poll every two minutes, skip articles older than 24 hours. Optional settings, e-mail alerts and heartbeat monitoring are in `.env.example`.
 
-Any RSS `<enclosure type="video/...">` takes priority over the article image (an MP4 enclosure is preferred when there are several), but only MP4 up to 512 MiB and between 0.5 seconds and 20 minutes long (X's limit for accounts without Premium) is supported. Featured article videos require [streekomroep-wp #253](https://github.com/oszuidwest/streekomroep-wp/pull/253), which reuses the linked fragment's cached MP4 enclosure; videos still being encoded or not yet cached are not advertised by the feed. Add the MP4 CDN hostname (and any redirect hosts) to `ALLOWED_HOSTS`.
-
-MP4 files up to 512 MiB are streamed through temporary files. Compose sets `TMPDIR` to a private 2 GiB tmpfs that clears on container stop, including crashes; allow roughly 1 GiB of memory for the two copies of a maximum-size video, plus browser overhead. Outside Compose, provide equivalent temporary storage. Downloads have five minutes and X upload/processing has ten minutes. The 512 MiB cap bounds each file; X itself accepts larger files. X still checks codecs, resolution and frame rate while processing (H.264 and AAC-LC work). A video that is not a readable `video/mp4`, is larger than 512 MiB, or falls outside the duration limits fails the article at once with an alert, because retrying cannot fix it. A video that does not record its duration, such as a fragmented MP4, is left to X. Other download failures (network errors, interrupted or empty downloads) and upload failures retry the article. Neither case publishes the image instead: only articles without a video enclosure use the existing image/text fallback.
+Videos must be advertised in the RSS feed as enclosures: MP4, up to 512 MiB, 0.5 seconds–20 minutes. Add CDN and redirect hosts to `ALLOWED_HOSTS`. Failed videos never fall back to images. Large videos need about 1 GiB of temporary memory plus browser overhead; Compose provides the temporary storage.
 
 ## Operations
 
 ```sh
 docker compose logs --tail=200 xposter
-# Posting status and retries:
-docker compose exec -T xposter node -e "fetch('http://127.0.0.1:8080/status').then(r => r.text()).then(console.log)"
 ```
 
-If the X session expires, update `X_AUTH_TOKEN` and run `docker compose up -d --force-recreate xposter`. An unhealthy container does not restart automatically; set `HEARTBEAT_URL` to monitor downtime.
+Expired session: update `X_AUTH_TOKEN`, then run `docker compose up -d --force-recreate xposter`. Set `HEARTBEAT_URL` to detect downtime; unhealthy containers do not restart automatically.
 
-To retry an article still in the feed (up to 14 days old), find its GUID in `/data/state.json`:
+Retry an article still in the feed (up to 14 days old), using its GUID from `/data/state.json`:
 
 ```sh
 docker compose stop xposter
@@ -44,16 +40,11 @@ docker compose start xposter
 
 ```sh
 go test ./...
-cd poster
-npm ci
-npm test
-npm run lint
-# Offline HTTP-to-browser integration checks (requires Playwright Chromium):
-node --test browser.integration.mjs
+(cd poster && npm ci && npm test && npm run lint)
 ```
 
-Container checks (from the repo root): `docker build -t zw-xposter:test . && bash container/test.sh zw-xposter:test`.
+Full container and browser checks: `docker build -t zw-xposter:test . && bash container/test.sh zw-xposter:test`.
 
-Releases use Git tags (`vX.Y.Z`): pushing a tag runs security checks and publishes the Docker image. Stable releases update `latest`; prereleases do not.
+Push a `vX.Y.Z` tag to run security checks and publish the image. Stable releases update `latest`.
 
 Licensed under [MIT](LICENSE).

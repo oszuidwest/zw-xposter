@@ -6,3 +6,6 @@ node_modules/
 /data/
 /debug/
 *.log
+*.tmp
+/coverage.out
+.DS_Store
