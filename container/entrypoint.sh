@@ -58,9 +58,10 @@ pids+=("$!")
     unset "${!X_@}"
     # Polls wait for the poster port; browser startup precedes listen,
     # and requests queue behind the initial session check.
+    # Allow the healthcheck start period, so slow hosts do not crash-loop.
     attempt=0
     until (: <>/dev/tcp/127.0.0.1/8081) 2>/dev/null; do
-        if ((++attempt >= 100)); then
+        if ((++attempt >= 900)); then
             echo 'poster did not start' >&2
             exit 1
         fi
