@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { access, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-core';
 
 assert.notEqual(process.getuid(), 0, 'the browser must run as a non-root user');
 assert.match(await readFile('/etc/os-release', 'utf8'), /VERSION_ID="26\.04"/);

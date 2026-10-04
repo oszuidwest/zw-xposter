@@ -12,7 +12,7 @@ import fs from 'node:fs/promises';
 import path from 'node:path';
 import { setInterval } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { chromium } from 'playwright';
+import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
 import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
