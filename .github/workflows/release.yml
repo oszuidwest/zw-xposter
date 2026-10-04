@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
     inputs:
       version:
-        description: 'Existing combined-image version tag (vX.Y.Z or vX.Y.Z-prerelease)'
+        description: 'Release version (vX.Y.Z or vX.Y.Z-prerelease); creates the tag if missing'
         required: true
 
 permissions:
@@ -16,6 +16,8 @@ permissions:
 jobs:
   version:
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     outputs:
       value: ${{ steps.version.outputs.value }}
     steps:
@@ -28,10 +30,31 @@ jobs:
           VERSION="${INPUT_VERSION:-$REF_NAME}"
           VERSION="v${VERSION#v}"
           if ! echo "$VERSION" | grep -Eq '^v[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::Version must be an existing semver tag and cannot be edge."
+            echo "::error::Version must be vX.Y.Z or vX.Y.Z-prerelease and cannot be edge."
             exit 1
           fi
           echo "value=$VERSION" >> "$GITHUB_OUTPUT"
+
+      - name: Checkout selected commit
+        if: github.event_name == 'workflow_dispatch'
+        uses: actions/checkout@v7
+        with:
+          ref: ${{ github.sha }}
+
+      - name: Create release tag if missing
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          VERSION: ${{ steps.version.outputs.value }}
+          RELEASE_SHA: ${{ github.sha }}
+        run: |
+          EXISTING_TAG=$(git ls-remote --tags origin "refs/tags/$VERSION")
+          if [[ -n "$EXISTING_TAG" ]]; then
+            echo "Tag $VERSION already exists; using it for this release."
+            exit 0
+          fi
+          git tag "$VERSION" "$RELEASE_SHA"
+          # GITHUB_TOKEN does not trigger another workflow on this tag push.
+          git push origin "refs/tags/$VERSION"
 
   security:
     needs: version

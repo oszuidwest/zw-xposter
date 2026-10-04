@@ -45,6 +45,6 @@ go test ./...
 
 Full container and browser checks: `docker build -t zw-xposter:test . && bash container/test.sh zw-xposter:test`.
 
-Push a `vX.Y.Z` tag to run security checks, publish the image and create the GitHub release with generated notes. Stable releases update `latest`; a release created by hand beforehand is kept.
+Run the **Release** workflow manually with a version such as `vX.Y.Z` (or `vX.Y.Z-prerelease`). It creates a missing tag at the selected commit, or reuses the existing tag, then runs security checks, publishes the image and creates the GitHub release with generated notes. Pushing a version tag also starts this workflow. Stable releases update `latest`; a release created by hand beforehand is kept.
 
 Licensed under [MIT](LICENSE).
