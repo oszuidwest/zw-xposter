@@ -21,6 +21,7 @@ import {
 import {
   createTimelineCollector,
   isFirstUserTweetsPage,
+  isUserTimelineResponse,
   parseCreateTweetResponse,
   postErrorResponse,
 } from './timeline.mjs';
@@ -432,7 +433,7 @@ async function recentPosts(hours) {
   const timeline = createTimelineCollector({ ownId, username: USERNAME, cutoff });
   const pending = [];
   const onResponse = (r) => {
-    if (!new URL(r.url()).pathname.endsWith('/UserTweets')) return;
+    if (!isUserTimelineResponse(r.url())) return;
     if (!r.ok()) {
       timeline.fail(`UserTweets returned HTTP ${r.status()}`);
       return;
