@@ -210,25 +210,13 @@ async function humanType(page, text) {
   }
 }
 
-// Answers the cookie banner, which otherwise sits on top of the side navigation.
-async function dismissCookieBanner(page) {
-  const refuse = page.getByRole('button', { name: COOKIE_REFUSAL });
-  if (!(await refuse.isVisible().catch(() => false))) return;
+// Dismiss an overlay before interacting with the page beneath it.
+async function dismissOverlay(page, button, message) {
+  if (!(await button.isVisible().catch(() => false))) return;
   await pause(700, 1800);
-  await humanClick(page, refuse);
-  await refuse.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-  log('refused non-essential cookies');
-}
-
-// Acknowledges a one-time feature notice, such as X's downloadable-video sheet,
-// which otherwise covers the composer's Post button.
-async function dismissNotice(page) {
-  const acknowledge = page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE });
-  if (!(await acknowledge.isVisible().catch(() => false))) return;
-  await pause(700, 1800);
-  await humanClick(page, acknowledge);
-  await acknowledge.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-  log('acknowledged an X notice');
+  await humanClick(page, button);
+  await button.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
+  log(message);
 }
 
 async function isLoggedIn(page) {
@@ -238,7 +226,7 @@ async function isLoggedIn(page) {
   await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
   // The banner renders a moment after the page.
   await pause(1000, 2000);
-  await dismissCookieBanner(page);
+  await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
   return nav.isVisible();
 }
 
@@ -405,7 +393,10 @@ async function createPost({ text, image, videoFile, dryRun }, clientGone) {
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
-    await dismissNotice(page);
+    // X's one-time video notice can cover the composer's Post button.
+    await dismissOverlay(page,
+      page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
+      'acknowledged an X notice');
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run');
