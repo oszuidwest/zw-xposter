@@ -116,9 +116,12 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
 	if err != nil {
 		return Result{}, err
+	}
+	if len(raw) > 1<<20 {
+		return Result{}, errors.New("poster response exceeds 1 MiB")
 	}
 	var out response
 	if err := json.Unmarshal(raw, &out); err != nil {

@@ -46,6 +46,7 @@ func TestFallbackClassification(t *testing.T) {
 		{"malformed", `{"clicked":false,"stage":"video"`, "video_captions", state.StatusUncertain, 1},
 		{"missing error", `{"clicked":false,"stage":"video"}`, "video_captions", state.StatusUncertain, 1},
 		{"invalid click type", `{"error":"video failed","clicked":"false","stage":"video"}`, "video_captions", state.StatusUncertain, 1},
+		{"oversized error", `{"error":"video failed","clicked":false,"stage":"video"}` + strings.Repeat(" ", 1<<20), "video_captions", state.StatusUncertain, 1},
 		{"lost response", "", "video_captions", state.StatusUncertain, 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
