@@ -87,6 +87,9 @@ func Load() (*Config, error) {
 	if cfg.PollInterval < 30*time.Second {
 		return nil, fmt.Errorf("POLL_INTERVAL must be at least 30s, got %s", cfg.PollInterval)
 	}
+	if cfg.PostDelay < 0 {
+		return nil, errors.New("POST_DELAY must not be negative")
+	}
 	// Zero would mark every new article as missed before it is posted.
 	if cfg.MaxAge <= 0 {
 		return nil, errors.New("MAX_AGE must be greater than zero")
@@ -94,7 +97,7 @@ func Load() (*Config, error) {
 	if cfg.PosterNotReadyAfter <= 0 {
 		return nil, errors.New("POSTER_NOT_READY_AFTER must be greater than zero")
 	}
-	// A shorter threshold would alert and recover on every healthy poll cycle.
+	// Leave room for the next scheduled poll before declaring it stale.
 	if cfg.PollStaleAfter <= cfg.PollInterval {
 		return nil, fmt.Errorf("POLL_STALE_AFTER must be longer than POLL_INTERVAL (%s), got %s", cfg.PollInterval, cfg.PollStaleAfter)
 	}

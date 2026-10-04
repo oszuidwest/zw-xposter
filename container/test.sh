@@ -114,6 +114,8 @@ JS
     cleanup
 done
 
-# One-shot mode waits for the browser, then returns the Go command's exit code.
-docker run --rm "${offline[@]}" -e DRY_RUN=true "$image" bash -c "$serve_fresh" _ -once
-echo 'PASS: one-shot shutdown'
+# One-shot mode must propagate the offline feed failure after browser startup.
+status=0
+docker run --rm "${offline[@]}" -e DRY_RUN=true "$image" bash -c "$serve_fresh" _ -once || status=$?
+[[ $status == 1 ]]
+echo 'PASS: one-shot shutdown preserves the poll failure'

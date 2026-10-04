@@ -14,7 +14,7 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/safehttp"
 )
 
-// maxImageSize is the largest image X accepts for a regular post.
+// maxImageSize bounds image buffering and the poster's base64 payload.
 const maxImageSize = 5 << 20
 
 // Image is a downloaded share image.

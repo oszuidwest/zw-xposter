@@ -81,6 +81,8 @@ func TestLoadRejectsInvalidDurations(t *testing.T) {
 		env     map[string]string
 		wantErr string
 	}{
+		{name: "negative post delay", env: map[string]string{"POST_DELAY": "-1s"}, wantErr: "POST_DELAY must not be negative"},
+		{name: "zero post delay", env: map[string]string{"POST_DELAY": "0s"}},
 		{name: "zero max age", env: map[string]string{"MAX_AGE": "0s"}, wantErr: "MAX_AGE must be greater than zero"},
 		{name: "negative max age", env: map[string]string{"MAX_AGE": "-1h"}, wantErr: "MAX_AGE must be greater than zero"},
 		{name: "stale threshold equals interval", env: map[string]string{"POLL_INTERVAL": "15m", "POLL_STALE_AFTER": "15m"}, wantErr: "POLL_STALE_AFTER must be longer than POLL_INTERVAL"},
@@ -89,7 +91,7 @@ func TestLoadRejectsInvalidDurations(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			for _, key := range []string{"MAX_AGE", "POLL_INTERVAL", "POLL_STALE_AFTER"} {
+			for _, key := range []string{"MAX_AGE", "POST_DELAY", "POLL_INTERVAL", "POLL_STALE_AFTER"} {
 				t.Setenv(key, tt.env[key])
 			}
 			_, err := Load()

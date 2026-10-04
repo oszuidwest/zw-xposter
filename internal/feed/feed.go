@@ -33,7 +33,7 @@ type rss struct {
 	} `xml:"channel>item"`
 }
 
-// Fetch downloads the feed and returns its items oldest first.
+// Fetch returns items oldest first, logging and skipping invalid publication dates.
 func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error) {
 	body, _, err := safehttp.Get(ctx, client, url, maxBodySize)
 	if err != nil {
