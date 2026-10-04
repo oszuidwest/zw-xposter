@@ -56,7 +56,7 @@ fi
 pids+=("$!")
 (
     unset "${!X_@}"
-    # Wait up to the 90s healthcheck start period for Chromium and the poster port.
+    # Allow slow Chromium starts 90s, matching the healthcheck start period.
     # Browser requests then queue behind the initial session check.
     attempt=0
     until (: <>/dev/tcp/127.0.0.1/8081) 2>/dev/null; do

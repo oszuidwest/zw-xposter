@@ -89,7 +89,7 @@ func TestPollReconcilesAfterOutcomeSaveFails(t *testing.T) {
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"complete": true, "posts": posts})
 		},
 		post: func(w http.ResponseWriter, _ *http.Request, item feed.Item) {
-			// The posting entry must be on disk before X receives the request.
+			// The write-ahead entry must be saved before X receives the request.
 			saved, err := state.Load(fixture.app.cfg.StateFile)
 			if err != nil {
 				t.Error(err)
