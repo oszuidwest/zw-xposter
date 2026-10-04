@@ -1,4 +1,5 @@
 {
   "cookieRefusalPattern": "Refuse non-essential cookies|Niet-essentiële cookies weigeren",
-  "loginErrorPattern": "beperkt|restricted|limit|later|onjuist|wrong|incorrect|fout|error"
+  "loginErrorPattern": "beperkt|restricted|limit|later|onjuist|wrong|incorrect|fout|error",
+  "noticeAcknowledgePattern": "^(Got it|Begrepen)$"
 }

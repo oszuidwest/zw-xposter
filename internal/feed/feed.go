@@ -6,6 +6,7 @@ import (
 	"encoding/xml"
 	"fmt"
 	"log/slog"
+	"mime"
 	"net/http"
 	"slices"
 	"strings"
@@ -22,14 +23,19 @@ type Item struct {
 	Title     string
 	Link      string
 	Published time.Time
+	VideoURL  string
 }
 
 type rss struct {
 	Items []struct {
-		GUID    string `xml:"guid"`
-		Title   string `xml:"title"`
-		Link    string `xml:"link"`
-		PubDate string `xml:"pubDate"`
+		GUID       string `xml:"guid"`
+		Title      string `xml:"title"`
+		Link       string `xml:"link"`
+		PubDate    string `xml:"pubDate"`
+		Enclosures []struct {
+			URL  string `xml:"url,attr"`
+			Type string `xml:"type,attr"`
+		} `xml:"enclosure"`
 	} `xml:"channel>item"`
 }
 
@@ -60,6 +66,17 @@ func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error)
 		}
 		if item.GUID == "" {
 			item.GUID = item.Link
+		}
+		for _, enclosure := range raw.Enclosures {
+			mediaType, _, _ := mime.ParseMediaType(enclosure.Type)
+			videoURL := strings.TrimSpace(enclosure.URL)
+			if videoURL == "" || !strings.HasPrefix(mediaType, "video/") {
+				continue
+			}
+			item.VideoURL = videoURL
+			if mediaType == "video/mp4" {
+				break
+			}
 		}
 		items = append(items, item)
 	}

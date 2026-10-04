@@ -1,0 +1,100 @@
+import { createWriteStream } from 'node:fs';
+import { mkdtemp, rm } from 'node:fs/promises';
+import os from 'node:os';
+import path from 'node:path';
+import { Transform } from 'node:stream';
+import { pipeline } from 'node:stream/promises';
+import { URLSearchParams } from 'node:url';
+import { TextDecoder } from 'node:util';
+
+// Must match maxVideoSize in internal/article/video.go. Videos travel as binary, never as JSON/base64.
+export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
+const VIDEO_RECEIVE_TIMEOUT_MS = 5 * 60_000;
+const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+
+export function videoPostText(encoded) {
+  if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
+  const bytes = Buffer.from(encoded, 'base64');
+  if (bytes.toString('base64') !== encoded) throw new Error('X-Post-Text must be base64');
+  const text = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
+  if (!text.trim()) throw new Error('text is required');
+  return text;
+}
+
+export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir = os.tmpdir() } = {}) {
+  const directory = await mkdtemp(path.join(tempDir, 'xposter-upload-'));
+  const file = path.join(directory, 'video.mp4');
+  const cleanup = () => rm(directory, { recursive: true, force: true });
+  let size = 0;
+  const limit = new Transform({
+    transform(chunk, encoding, callback) {
+      size += chunk.length;
+      callback(size > maxBytes ? new Error(`video exceeds ${maxBytes} bytes`) : null, chunk);
+    },
+  });
+  try {
+    await pipeline(source, limit, createWriteStream(file, { mode: 0o600, flags: 'wx' }), {
+      signal: AbortSignal.timeout(VIDEO_RECEIVE_TIMEOUT_MS),
+    });
+    if (!size) throw new Error('video is empty');
+    return { file, cleanup };
+  } catch (err) {
+    await cleanup();
+    throw err;
+  }
+}
+
+function isMediaUpload(url) {
+  return ['upload.x.com', 'upload.twitter.com', 'x.com', 'api.x.com'].includes(url.hostname)
+    && /\/(?:i|1\.1)\/media\/upload\.json$/.test(url.pathname);
+}
+
+// The upload command is in the query string or a form-encoded body.
+function uploadCommand(url, request) {
+  const command = url.searchParams.get('command');
+  if (command) return command;
+  const form = request.headers()['content-type']?.startsWith('application/x-www-form-urlencoded');
+  return form ? new URLSearchParams(request.postData() || '').get('command') : null;
+}
+
+// X can show a preview while it is still encoding the video. Require its upload
+// response to confirm processing succeeded before allowing the Post button.
+export async function uploadVideo(page, dialog, file, {
+  timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
+  throwIfCancelled = () => {},
+} = {}) {
+  throwIfCancelled();
+  let mediaID;
+  // Aborting stops the wait if selecting the file fails before X responds.
+  const release = new AbortController();
+  const ready = page.waitForResponse(async (res) => {
+    const url = new URL(res.url());
+    if (!isMediaUpload(url)) return false;
+    if (!res.ok()) throw new Error(`video upload returned HTTP ${res.status()}`);
+    if (res.status() === 204) return false; // APPEND acknowledgements have no JSON.
+    const body = await res.json();
+    if (body.errors?.length || body.error) {
+      throw new Error(`video upload rejected: ${JSON.stringify(body.errors || body.error)}`);
+    }
+    const id = body.media_id_string;
+    mediaID ||= id;
+    if (id && id !== mediaID) return false;
+    const info = body.processing_info;
+    if (info?.state === 'failed') {
+      throw new Error(`video processing failed: ${JSON.stringify(info.error || info)}`);
+    }
+    // FINALIZE without processing_info means synchronous completion.
+    return info?.state === 'succeeded' || Boolean(id && !info && uploadCommand(url, res.request()) === 'FINALIZE');
+  }, { timeout: timeoutMs, signal: release.signal });
+  try {
+    // An upload can fail while setInputFiles is still pending.
+    await Promise.all([
+      dialog.locator('input[data-testid="fileInput"]').first().setInputFiles(file, { timeout: timeoutMs }),
+      ready,
+    ]);
+    throwIfCancelled();
+    await dialog.locator('[data-testid="attachments"] video').first().waitFor({ timeout: 30_000 });
+  } finally {
+    release.abort();
+  }
+}

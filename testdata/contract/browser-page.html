@@ -6,16 +6,39 @@
 <button data-testid="SideNav_NewTweet_Button" onclick="document.querySelector('[role=dialog]').hidden=false">Compose</button>
 <section role="dialog" aria-modal="true" hidden>
   <div data-testid="tweetTextarea_0" contenteditable="true" style="width:400px;height:80px;border:1px solid"></div>
+  <input type="file" data-testid="fileInput">
+  <div data-testid="attachments"></div>
   <button data-testid="tweetButton">Post</button>
 </section>
 <article>Offline timeline</article>
 <script>
+  let noticeShown = false;
+  document.querySelector('[data-testid=fileInput]').onchange = async (event) => {
+    const file = event.target.files[0];
+    const preview = document.createElement(file.type === 'video/mp4' ? 'video' : 'img');
+    preview.style.cssText = 'width:320px;height:180px';
+    document.querySelector('[data-testid=attachments]').replaceChildren(preview);
+    if (file.type !== 'video/mp4') return;
+    await fetch('/i/media/upload.json?command=INIT', { method: 'POST' });
+    await fetch('/i/media/upload.json?command=APPEND', { method: 'POST', body: file });
+    await fetch('/i/media/upload.json?command=FINALIZE', { method: 'POST' });
+    await fetch('/i/media/upload.json?command=STATUS&media_id=123');
+    // Like X, announce downloadable videos once, in a sheet that covers the composer.
+    if (noticeShown) return;
+    noticeShown = true;
+    const notice = document.createElement('div');
+    notice.setAttribute('role', 'dialog');
+    notice.style.cssText = 'position:fixed;inset:0;background:#fffc';
+    notice.innerHTML = '<button>Got it</button>';
+    notice.querySelector('button').onclick = () => notice.remove();
+    document.body.append(notice);
+  };
   document.querySelector('[data-testid=tweetButton]').onclick = async () => {
     await fetch('/i/api/graphql/offline/CreateTweet', {
       method: 'POST',
       body: JSON.stringify({ text: document.querySelector('[contenteditable]').textContent }),
     });
-    document.querySelector('[role=dialog]').hidden = true;
+    document.querySelector('[role=dialog]').remove();
   };
   if (location.pathname === '/fixture_account') {
     (async () => {

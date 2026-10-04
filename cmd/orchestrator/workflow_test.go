@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +16,104 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/state"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
+
+func TestPollVideoTakesPriority(t *testing.T) {
+	unavailable := func(w http.ResponseWriter) { http.Error(w, "unavailable", http.StatusServiceUnavailable) }
+	interrupted := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", "100")
+		_, _ = io.WriteString(w, "partial")
+	}
+	mp4 := testutil.MP4(time.Minute)
+	quicktime := func(w http.ResponseWriter) { w.Header().Set("Content-Type", "video/quicktime") }
+	tooLong := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "video/mp4")
+		_, _ = w.Write(testutil.MP4(21 * time.Minute))
+	}
+	oversize := func(w http.ResponseWriter) {
+		w.Header().Set("Content-Type", "video/mp4")
+		w.Header().Set("Content-Length", fmt.Sprint(512<<20+1)) // article's maxVideoSize + 1
+	}
+	for _, tt := range []struct {
+		name        string
+		dryRun      bool
+		download    func(http.ResponseWriter)
+		postError   string
+		wantStatus  string
+		wantPosts   int32
+		wantBackoff time.Duration
+		wantError   string
+	}{
+		{name: "video replaces image", wantStatus: state.StatusPosted, wantPosts: 1},
+		{name: "dry run never posts", dryRun: true, wantStatus: state.StatusPosted},
+		{name: "download failure retries without image", download: unavailable, wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "503"},
+		{name: "interrupted download retries", download: interrupted, wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "unexpected EOF"},
+		{name: "unsupported type fails at once", download: quicktime, wantStatus: state.StatusFailedTerminal, wantError: "only video/mp4 is supported"},
+		{name: "oversize video fails at once", download: oversize, wantStatus: state.StatusFailedTerminal, wantError: "exceeds"},
+		{name: "video longer than X allows fails at once", download: tooLong, wantStatus: state.StatusFailedTerminal, wantError: "duration 21m0s is outside"},
+		{name: "dry run reports an unsupported video", dryRun: true, download: quicktime, wantStatus: state.StatusFailedTerminal, wantError: "only video/mp4 is supported"},
+		{name: "upload failure retries", postError: `{"error":"encoding failed","clicked":false}`, wantStatus: state.StatusRetry, wantPosts: 1, wantBackoff: retryInitial},
+		{name: "post-click failure reconciles", postError: `{"error":"confirmation missing","clicked":true}`, wantStatus: state.StatusUncertain, wantPosts: 1, wantBackoff: uncertainMinimum},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var contentCalls int
+			fixture := newPollTest(t, &pollTestOptions{
+				content: func(w http.ResponseWriter, r *http.Request) {
+					contentCalls++
+					if r.URL.Path != "/video.mp4" {
+						t.Errorf("video article fetched image/page: %s", r.URL.Path)
+					}
+					if tt.download != nil {
+						tt.download(w)
+						return
+					}
+					w.Header().Set("Content-Type", "video/mp4")
+					_, _ = w.Write(mp4)
+				},
+				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
+					testutil.Equal(t, r.URL.Path, "/post-video")
+					testutil.Equal(t, r.Header.Get("Content-Type"), "video/mp4")
+					text, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Post-Text"))
+					testutil.NoError(t, err)
+					testutil.Equal(t, string(text), postText(&item))
+					body, err := io.ReadAll(r.Body)
+					testutil.NoError(t, err)
+					testutil.Equal(t, string(body), string(mp4))
+					if tt.postError != "" {
+						w.WriteHeader(http.StatusInternalServerError)
+						_, _ = io.WriteString(w, tt.postError)
+						return
+					}
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/video"})
+				},
+			})
+			fixture.items[0].VideoURL = strings.TrimSuffix(fixture.item.Link, "/article") + "/video.mp4"
+			fixture.app.cfg.DryRun = tt.dryRun
+			before := fixture.app.store.Items[fixture.item.GUID]
+			entry := fixture.poll()
+			testutil.Equal(t, entry.Status, tt.wantStatus)
+			fixture.assertCalls(1, tt.wantPosts)
+			testutil.Equal(t, contentCalls, 1)
+			if tt.wantBackoff > 0 {
+				testutil.Equal(t, entry.Attempts, 1)
+				testutil.Equal(t, entry.NextAttemptAt, testNow.Add(tt.wantBackoff))
+			}
+			if tt.wantError != "" && !strings.Contains(entry.LastError, tt.wantError) {
+				t.Fatalf("last error = %q, want it to contain %q", entry.LastError, tt.wantError)
+			}
+			_, alerted := workflowAlert(fixture.item.GUID, &before, &entry)
+			testutil.Equal(t, alerted, tt.wantStatus == state.StatusFailedTerminal)
+			if tt.wantStatus == state.StatusFailedTerminal {
+				testutil.Equal(t, entry.Attempts, 0)
+				testutil.Equal(t, entry.NextAttemptAt, time.Time{})
+				// A permanent failure is final: later polls neither download nor post.
+				fixture.poll()
+				fixture.assertCalls(1, 0)
+				testutil.Equal(t, contentCalls, 1)
+			}
+		})
+	}
+}
 
 func TestPollRecoversPersistedPosting(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusPosting, Attempts: 1}})

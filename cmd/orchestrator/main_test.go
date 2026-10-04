@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"html"
 	"io"
 	"maps"
 	"net/http"
@@ -84,7 +85,7 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 				return
 			}
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": true})
-		case "/post":
+		case "/post", "/post-video":
 			fixture.postCalls.Add(1)
 			if opts.post != nil {
 				opts.post(w, r, fixture.item)
@@ -188,8 +189,12 @@ func writeFeed(t *testing.T, w http.ResponseWriter, items []feed.Item) {
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0"?><rss><channel>`)
 	for _, item := range items {
-		fmt.Fprintf(&b, `<item><title>%s</title><link>%s</link><guid>%s</guid><pubDate>%s</pubDate></item>`,
+		fmt.Fprintf(&b, `<item><title>%s</title><link>%s</link><guid>%s</guid><pubDate>%s</pubDate>`,
 			item.Title, item.Link, item.GUID, item.Published.Format(time.RFC1123Z))
+		if item.VideoURL != "" {
+			fmt.Fprintf(&b, `<enclosure url="%s" type="video/mp4" length="123"/>`, html.EscapeString(item.VideoURL))
+		}
+		b.WriteString(`</item>`)
 	}
 	b.WriteString(`</channel></rss>`)
 	w.Header().Set("Content-Type", "application/rss+xml")
@@ -218,11 +223,11 @@ var maxLookbackHours = fmt.Sprintf("%d hours", poster.MaxLookbackHours)
 func TestPostText(t *testing.T) {
 	link := "https://www.zuidwestupdate.nl/news/article/"
 
-	got := postText(feed.Item{Title: "Short title", Link: link})
+	got := postText(&feed.Item{Title: "Short title", Link: link})
 	testutil.Equal(t, got, "Short title "+link)
 
 	long := strings.Repeat("é", 300)
-	got = postText(feed.Item{Title: long, Link: link})
+	got = postText(&feed.Item{Title: long, Link: link})
 	title := strings.TrimSuffix(got, " "+link)
 	testutil.Equal(t, utf8.RuneCountInString(title), 256)
 	testutil.Equal(t, strings.HasSuffix(title, "…"), true)

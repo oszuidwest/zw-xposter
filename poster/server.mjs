@@ -5,6 +5,7 @@
 //   GET /ready -> 200 after a recent successful session check
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
+//   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -14,6 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
+import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
 import {
   sessionCheckDelay,
   sessionHealth,
@@ -54,6 +56,7 @@ const LOGIN_RETRY_MS = 30 * 60_000;
 const MAX_RECENT_HOURS = 336;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
+const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 
 let context;
 let tab;
@@ -207,14 +210,13 @@ async function humanType(page, text) {
   }
 }
 
-// Answers the cookie banner, which otherwise sits on top of the side navigation.
-async function dismissCookieBanner(page) {
-  const refuse = page.getByRole('button', { name: COOKIE_REFUSAL });
-  if (!(await refuse.isVisible().catch(() => false))) return;
+// Dismiss an overlay before interacting with the page beneath it.
+async function dismissOverlay(page, button, message) {
+  if (!(await button.isVisible().catch(() => false))) return;
   await pause(700, 1800);
-  await humanClick(page, refuse);
-  await refuse.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-  log('refused non-essential cookies');
+  await humanClick(page, button);
+  await button.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
+  log(message);
 }
 
 async function isLoggedIn(page) {
@@ -224,7 +226,7 @@ async function isLoggedIn(page) {
   await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
   // The banner renders a moment after the page.
   await pause(1000, 2000);
-  await dismissCookieBanner(page);
+  await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
   return nav.isVisible();
 }
 
@@ -350,7 +352,8 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-async function createPost({ text, image, dryRun }, clientGone) {
+// videoFile is a local path, so it is never part of the request payload.
+async function createPost({ text, image, dryRun }, clientGone, videoFile) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');
   };
@@ -375,7 +378,9 @@ async function createPost({ text, image, dryRun }, clientGone) {
     await humanClick(page, box);
     await humanType(page, text);
 
-    if (image) {
+    if (videoFile) {
+      await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
+    } else if (image) {
       await pause(800, 2000);
       await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
         name: image.name || 'image',
@@ -389,6 +394,10 @@ async function createPost({ text, image, dryRun }, clientGone) {
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
+    // X's one-time video notice can cover the composer's Post button.
+    await dismissOverlay(page,
+      page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
+      'acknowledged an X notice');
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run');
@@ -473,6 +482,14 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// A destroyed response means the client has disconnected.
+async function postAndSend(res, post, videoFile) {
+  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+  const result = await exclusive(() => createPost(post, () => res.destroyed, videoFile));
+  log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
+  send(res, 200, result);
+}
+
 async function readJSON(req) {
   const chunks = [];
   let size = 0;
@@ -503,17 +520,30 @@ export const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/post') {
       const payload = await readJSON(req);
+      if (payload.videoFile) return send(res, 400, { error: 'use /post-video to upload a video' });
       if (typeof payload.text !== 'string' || !payload.text.trim()) {
         return send(res, 400, { error: 'text is required' });
       }
       if (payload.image && (!payload.image.mime || !payload.image.data)) {
         return send(res, 400, { error: 'image needs mime and data' });
       }
-      log('posting:', payload.text.split('\n')[0].slice(0, 100));
-      // A destroyed response means the client has disconnected.
-      const result = await exclusive(() => createPost(payload, () => res.destroyed));
-      log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
-      return send(res, 200, result);
+      return await postAndSend(res, payload);
+    }
+    if (req.method === 'POST' && url.pathname === '/post-video') {
+      let text;
+      try {
+        if (req.headers['content-type'] !== 'video/mp4') throw new Error('video/mp4 is required');
+        if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
+        text = videoPostText(req.headers['x-post-text']);
+      } catch (err) {
+        return send(res, 400, postErrorResponse(err));
+      }
+      const video = await receiveVideo(req);
+      try {
+        return await postAndSend(res, { text }, video.file);
+      } finally {
+        await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
+      }
     }
     send(res, 404, { error: 'not found' });
   } catch (err) {

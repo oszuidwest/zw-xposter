@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async (t) => {
+test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async (t) => {
   const dataDir = await mkdtemp(path.join(os.tmpdir(), 'poster-workflow-'));
   let context;
   let server;
@@ -31,6 +31,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async
   const pageHTML = await fixture('browser-page.html');
   let rejectPost = false;
   let failPagination = false;
+  let failVideo = false;
+  let videoStatusRequested;
+  let videoProcessing;
+  let uploadedBytes = 0;
   const published = [];
   const unexpected = [];
   await context.route('**/*', async (route) => {
@@ -39,6 +43,23 @@ test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async
     if (url.origin !== 'https://x.com') {
       unexpected.push(request.url());
       return route.abort();
+    }
+    if (url.pathname === '/i/media/upload.json') {
+      const command = url.searchParams.get('command');
+      if (command === 'APPEND') {
+        uploadedBytes = request.postDataBuffer().length;
+        return route.fulfill({ status: 204 });
+      }
+      const body = { media_id_string: '123' };
+      if (command === 'FINALIZE') body.processing_info = { state: 'pending' };
+      if (command === 'STATUS') {
+        videoStatusRequested.resolve();
+        await videoProcessing.promise;
+        body.processing_info = failVideo
+          ? { state: 'failed', error: { message: 'Synthetic encoding failure' } }
+          : { state: 'succeeded' };
+      }
+      return route.fulfill({ contentType: 'application/json', body: JSON.stringify(body) });
     }
     if (url.pathname.endsWith('/CreateTweet')) {
       published.push(request.postDataJSON().text);
@@ -71,11 +92,23 @@ test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async
   const post = (text, signal) => fetch(`${base}/post`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal,
   });
+  const postVideo = (text, bytes) => fetch(`${base}/post-video`, {
+    method: 'POST',
+    headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64') },
+    body: bytes,
+  });
 
   await t.test('validates requests before browser work and keeps readiness passive', async () => {
     assert.equal((await fetch(`${base}/ready`)).status, 503);
     assert.equal((await fetch(`${base}/health`)).status, 200);
     assert.equal((await post(' ')).status, 400);
+    assert.equal((await fetch(`${base}/post-video`, { method: 'POST' })).status, 400);
+    assert.equal((await postVideo(' ', Buffer.from('video'))).status, 400);
+    const localPath = await fetch(`${base}/post`, {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ text: 'invalid', videoFile: '/etc/passwd' }),
+    });
+    assert.equal(localPath.status, 400);
     for (const hours of [0, -1, 337, 'invalid']) {
       assert.equal((await fetch(`${base}/recent?hours=${hours}`)).status, 400);
     }
@@ -121,6 +154,37 @@ test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async
     assert.match(body.error, /Synthetic rejection/);
     assert.equal(published.at(-1), 'Rejected');
     rejectPost = false;
+  });
+
+  await t.test('binary videos larger than the JSON limit wait for encoding before posting', async () => {
+    videoStatusRequested = Promise.withResolvers();
+    videoProcessing = Promise.withResolvers();
+    const before = [...published];
+    const bytes = Buffer.alloc(21 * 1024 * 1024, 1);
+    const response = postVideo('Video café 🎥', bytes);
+    await videoStatusRequested.promise;
+    assert.equal(uploadedBytes, bytes.length);
+    assert.deepEqual(published, before, 'a preview and enabled button do not mean the video is ready');
+    videoProcessing.resolve();
+    const result = await response;
+    assert.equal(result.status, 200);
+    assert.match((await result.json()).url, /\/status\//);
+    assert.equal(published.at(-1), 'Video café 🎥');
+  });
+
+  await t.test('failed video processing never clicks Post', async () => {
+    failVideo = true;
+    videoStatusRequested = Promise.withResolvers();
+    videoProcessing = Promise.withResolvers();
+    videoProcessing.resolve();
+    const before = [...published];
+    const response = await postVideo('Bad video', Buffer.from('synthetic MP4'));
+    assert.equal(response.status, 500);
+    const result = await response.json();
+    assert.equal(result.clicked, false);
+    assert.match(result.error, /Synthetic encoding failure/);
+    assert.deepEqual(published, before);
+    failVideo = false;
   });
 
   await t.test('an HTTP failure in pagination refuses the whole recent result', async () => {

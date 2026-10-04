@@ -334,7 +334,7 @@ func (a *app) poll(ctx context.Context) error {
 	}
 	workflow := &pollState{now: now, lookback: a.recentLookback(items, now)}
 	for _, item := range items {
-		if err := a.processItem(ctx, item, workflow); err != nil {
+		if err := a.processItem(ctx, &item, workflow); err != nil {
 			return err
 		}
 	}
@@ -364,7 +364,7 @@ func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 	return nil
 }
 
-func (a *app) processItem(ctx context.Context, item feed.Item, workflow *pollState) error {
+func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollState) error {
 	if a.store.Done(item.GUID) {
 		return nil
 	}
@@ -469,17 +469,46 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 
 // publish posts the item and records the outcome in entry. Poster failures
 // become workflow state; only a state-save failure is returned.
-func (a *app) publish(ctx context.Context, item feed.Item, entry *state.Entry) (string, error) {
+func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) (string, error) {
 	log := slog.With("title", item.Title, "link", item.Link)
 	text := postText(item)
 
-	img, err := article.FetchImage(ctx, a.http, item.Link)
-	if err != nil {
-		// Keep the article link useful even when its share image is unavailable.
-		log.Warn("posting without image", "error", err)
+	var (
+		img   *article.Image
+		video *article.Video
+		err   error
+	)
+	if item.VideoURL != "" {
+		video, err = article.FetchVideo(ctx, a.http, item.VideoURL)
+		if errors.Is(err, article.ErrUnsupportedVideo) {
+			// Video takes priority over the image, so an unpostable video ends the workflow.
+			entry.Status = state.StatusFailedTerminal
+			entry.LastError = fmt.Sprintf("featured video cannot be posted; retrying will not help: %v", err)
+			log.Error("featured video cannot be posted and needs manual review", "video", item.VideoURL, "error", err)
+			return "", a.record(item.GUID, entry)
+		}
+		if err != nil {
+			entry.Status = state.StatusRetry
+			entry.Attempts++
+			entry.LastError = err.Error()
+			entry.NextAttemptAt = a.now().Add(retryDelay(entry.Attempts))
+			log.Warn("video download failed; will retry", "error", err)
+			return "", a.record(item.GUID, entry)
+		}
+		defer func() {
+			if err := video.Close(); err != nil {
+				log.Warn("remove downloaded video", "error", err)
+			}
+		}()
+	} else {
+		img, err = article.FetchImage(ctx, a.http, item.Link)
+		if err != nil {
+			// Keep the article link useful even when its share image is unavailable.
+			log.Warn("posting without image", "error", err)
+		}
 	}
 	if a.cfg.DryRun {
-		log.Info("dry run: would post", "text", text, "image", img != nil)
+		log.Info("dry run: would post", "text", text, "image", img != nil, "video", video != nil)
 		// Remember previews in memory so later dry-run polls skip them.
 		entry.Status = state.StatusPosted
 		return "", a.record(item.GUID, entry)
@@ -493,7 +522,13 @@ func (a *app) publish(ctx context.Context, item feed.Item, entry *state.Entry) (
 		return "", fmt.Errorf("save write-ahead state: %w", err)
 	}
 
-	url, postErr := a.poster.Post(ctx, text, img)
+	var url string
+	var postErr error
+	if video != nil {
+		url, postErr = a.poster.PostVideo(ctx, text, video)
+	} else {
+		url, postErr = a.poster.Post(ctx, text, img)
+	}
 	now := a.now()
 	if postErr == nil {
 		entry.Status = state.StatusPosted
@@ -678,7 +713,7 @@ func (a *app) save() error {
 }
 
 // postText formats the post as "<title> <link>", shortening the title to fit.
-func postText(item feed.Item) string {
+func postText(item *feed.Item) string {
 	title := item.Title
 	if runes := []rune(title); len(runes) > maxTitleRunes {
 		title = string(runes[:maxTitleRunes-1]) + "…"

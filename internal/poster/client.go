@@ -4,6 +4,7 @@ package poster
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -76,8 +77,26 @@ func (c *Client) Post(ctx context.Context, text string, img *article.Image) (str
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
+	return c.sendPost(req, c.http)
+}
 
-	resp, err := c.http.Do(req)
+// PostVideo streams an MP4 instead of buffering a base64 copy in JSON.
+func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader) (string, error) {
+	// NopCloser stops the transport from closing a caller-owned *article.Video.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post-video", io.NopCloser(video))
+	if err != nil {
+		return "", fmt.Errorf("create video post: %w", err)
+	}
+	req.Header.Set("Content-Type", "video/mp4")
+	req.Header.Set("X-Post-Text", base64.StdEncoding.EncodeToString([]byte(text)))
+	client := *c.http
+	// Allow receipt (5 minutes), upload/processing (10), and browser confirmation.
+	client.Timeout = 20 * time.Minute
+	return c.sendPost(req, &client)
+}
+
+func (c *Client) sendPost(req *http.Request, client *http.Client) (string, error) {
+	resp, err := client.Do(req)
 	if err != nil {
 		return "", err
 	}
