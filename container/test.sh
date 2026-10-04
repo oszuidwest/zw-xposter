@@ -11,6 +11,11 @@ offline=(--network none --shm-size=1g --tmpfs '/data:uid=1000,gid=1000,mode=0700
     -e X_USERNAME=offline-test -e X_AUTH_TOKEN=offline-test)
 serve_fresh='echo '\''{"items":{}}'\'' >/data/state.json && exec /app/entrypoint.sh serve "$@"'
 
+# Isolate startup ordering and timeouts from browser and session behavior.
+docker run --rm --network none --user 0 --tmpfs /data \
+    -v "$root/container/entrypoint.test.sh:/tmp/entrypoint.test.sh:ro" \
+    "$image" bash /tmp/entrypoint.test.sh
+
 start() {
     docker run -d --name "$container" "${offline[@]}" -e GRAPH_CLIENT_SECRET=offline-test \
         "$image" bash -c "$serve_fresh" _ >/dev/null
