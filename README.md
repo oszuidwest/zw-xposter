@@ -51,6 +51,6 @@ Full container and browser checks: `docker build -t zw-xposter:test . && bash co
 
 The browser integration test intercepts X requests and stubs ElevenLabs; it never publishes real posts or incurs transcription charges.
 
-Push a `vX.Y.Z` tag to run security checks and publish the image. Stable releases update `latest`.
+Run the **Release** workflow manually with a version such as `vX.Y.Z` (or `vX.Y.Z-prerelease`). It creates a missing tag at the selected commit, or reuses the existing tag, then runs security checks, publishes the image and creates the GitHub release with generated notes. Pushing a version tag also starts this workflow. Stable releases update `latest`; a release created by hand beforehand is kept.
 
 Licensed under [MIT](LICENSE).
