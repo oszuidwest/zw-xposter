@@ -47,16 +47,27 @@ type request struct {
 }
 
 type response struct {
-	URL     string `json:"url"`
+	Result
 	Error   string `json:"error"`
 	Clicked *bool  `json:"clicked"`
+	Stage   string `json:"stage"`
+}
+
+// Result describes the confirmed post and any caption downgrade within the request.
+type Result struct {
+	URL            string `json:"url"`
+	Captions       string `json:"captions,omitempty"`
+	FallbackReason string `json:"fallbackReason,omitempty"`
 }
 
 // PostError is a poster failure. Clicked is true unless a pre-click failure is confirmed.
 type PostError struct {
-	Status  string
-	Message string
-	Clicked bool
+	Status         string
+	Message        string
+	Clicked        bool
+	Stage          string
+	Captions       string
+	FallbackReason string
 }
 
 // Error preserves the poster's message for operational logs.
@@ -76,50 +87,60 @@ func (c *Client) Post(ctx context.Context, text string, img *article.Image) (str
 		return "", err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	return c.sendPost(req, c.http)
+	result, err := c.sendPost(req, c.http)
+	return result.URL, err
 }
 
 // PostVideo streams an MP4 instead of buffering a base64 copy in JSON.
-func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader) (string, error) {
+func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, captions bool) (Result, error) {
 	// NopCloser stops the transport from closing a caller-owned *article.Video.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post-video", io.NopCloser(video))
 	if err != nil {
-		return "", fmt.Errorf("create video post: %w", err)
+		return Result{}, fmt.Errorf("create video post: %w", err)
 	}
 	req.Header.Set("Content-Type", "video/mp4")
 	req.Header.Set("X-Post-Text", base64.StdEncoding.EncodeToString([]byte(text)))
+	if !captions {
+		req.Header.Set("X-Post-Captions", "none")
+	}
 	client := *c.http
-	// Allow transcription (10 minutes), receipt (5), upload (10), and confirmation.
+	// Receipt has 5 minutes; the poster bounds queueing and all browser work to 24.
 	client.Timeout = 30 * time.Minute
 	return c.sendPost(req, &client)
 }
 
-func (c *Client) sendPost(req *http.Request, client *http.Client) (string, error) {
+func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error) {
 	resp, err := client.Do(req)
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	defer func() { _ = resp.Body.Close() }()
 
 	raw, err := io.ReadAll(io.LimitReader(resp.Body, 1<<20))
 	if err != nil {
-		return "", err
+		return Result{}, err
 	}
 	var out response
 	if err := json.Unmarshal(raw, &out); err != nil {
-		return "", fmt.Errorf("poster returned %s: %s", resp.Status, raw)
+		return Result{}, fmt.Errorf("poster returned %s: %s", resp.Status, raw)
 	}
 	if resp.StatusCode != http.StatusOK {
-		return "", &PostError{
-			Status:  resp.Status,
-			Message: out.Error,
-			Clicked: out.Clicked == nil || *out.Clicked,
+		if strings.TrimSpace(out.Error) == "" {
+			return Result{}, fmt.Errorf("poster returned %s without an error description", resp.Status)
+		}
+		return Result{}, &PostError{
+			Status:         resp.Status,
+			Message:        out.Error,
+			Clicked:        out.Clicked == nil || *out.Clicked,
+			Stage:          out.Stage,
+			Captions:       out.Captions,
+			FallbackReason: out.FallbackReason,
 		}
 	}
 	if strings.TrimSpace(out.URL) == "" {
-		return "", errors.New("poster returned success without a post URL")
+		return Result{}, errors.New("poster returned success without a post URL")
 	}
-	return out.URL, nil
+	return out.Result, nil
 }
 
 // Post is a published post on the account.

@@ -467,85 +467,159 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 }
 
 // publish posts the item and records the outcome in entry. Poster failures
-// become workflow state; only a state-save failure is returned.
+// become workflow state; cancellation and state-save failures stop the poll.
 func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) (string, error) {
 	log := slog.With("title", item.Title, "link", item.Link)
 	text := postText(item)
-
-	var (
-		img   *article.Image
-		video *article.Video
-		err   error
-	)
-	if item.VideoURL != "" {
-		video, err = article.FetchVideo(ctx, a.http, item.VideoURL)
-		if errors.Is(err, article.ErrUnsupportedVideo) {
-			// Video takes priority over the image, so an unpostable video ends the workflow.
-			entry.Status = state.StatusFailedTerminal
-			entry.LastError = fmt.Sprintf("featured video cannot be posted; retrying will not help: %v", err)
-			log.Error("featured video cannot be posted and needs manual review", "video", item.VideoURL, "error", err)
-			return "", a.record(item.GUID, entry)
-		}
+	for {
+		img, video, err := a.prepareMedia(ctx, item, entry)
 		if err != nil {
-			entry.Status = state.StatusRetry
-			entry.Attempts++
-			entry.LastError = err.Error()
-			entry.NextAttemptAt = a.now().Add(retryDelay(entry.Attempts))
-			log.Warn("video download failed; will retry", "error", err)
-			return "", a.record(item.GUID, entry)
+			return "", err
 		}
-		defer func() {
-			if err := video.Close(); err != nil {
-				log.Warn("remove downloaded video", "error", err)
+		// Release the potentially large file before any image/text fallback.
+		closeVideo := func() {
+			if video != nil {
+				if err := video.Close(); err != nil {
+					log.Warn("remove downloaded video", "error", err)
+				}
 			}
-		}()
-	} else {
-		img, err = article.FetchImage(ctx, a.http, item.Link)
-		if err != nil {
-			// Keep the article link useful even when its share image is unavailable.
-			log.Warn("posting without image", "error", err)
 		}
-	}
-	if a.cfg.DryRun {
-		log.Info("dry run: would post", "text", text, "image", img != nil, "video", video != nil)
-		// Remember previews in memory so later dry-run polls skip them.
-		entry.Status = state.StatusPosted
-		return "", a.record(item.GUID, entry)
-	}
+		if err := ctx.Err(); err != nil {
+			closeVideo()
+			return "", err
+		}
+		if a.cfg.DryRun {
+			// The API key is deliberately only passed to the poster process.
+			log.Info("dry run: predicted post; captions, upload and browser outcome unverified", "text", text, "format", entry.Format, "fallback_reason", entry.FallbackReason)
+			closeVideo()
+			entry.Status = state.StatusPosted // in-memory preview only
+			return "", a.record(item.GUID, entry)
+		}
 
-	entry.Status = state.StatusPosting
-	entry.Attempts++
-	entry.LastError = ""
-	entry.NextAttemptAt = time.Time{}
-	if err := a.record(item.GUID, entry); err != nil {
-		return "", fmt.Errorf("save write-ahead state: %w", err)
-	}
-
-	var url string
-	var postErr error
-	if video != nil {
-		url, postErr = a.poster.PostVideo(ctx, text, video)
-	} else {
-		url, postErr = a.poster.Post(ctx, text, img)
-	}
-	now := a.now()
-	if postErr == nil {
-		entry.Status = state.StatusPosted
-		entry.PostURL = url
-		log.Info("posted", "post", url)
-	} else {
+		entry.Status = state.StatusPosting
+		entry.Attempts++
+		entry.NextAttemptAt = time.Time{}
+		if err := a.record(item.GUID, entry); err != nil {
+			closeVideo()
+			return "", fmt.Errorf("save write-ahead state: %w", err)
+		}
+		var result poster.Result
+		var postErr error
+		if err := ctx.Err(); err != nil {
+			closeVideo()
+			return "", err
+		}
+		if video != nil {
+			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == "video_captions")
+		} else {
+			result.URL, postErr = a.poster.Post(ctx, text, img)
+		}
+		closeVideo()
+		pe, known := errors.AsType[*poster.PostError](postErr)
+		if video != nil {
+			if known {
+				result.Captions, result.FallbackReason = pe.Captions, pe.FallbackReason
+			}
+			if result.Captions == "none" {
+				entry.Format = "video"
+				if result.FallbackReason != "" {
+					entry.FallbackReason = result.FallbackReason
+				}
+				log.Info("video captions skipped", "reason", entry.FallbackReason)
+			}
+		}
+		if postErr == nil {
+			entry.Status, entry.PostURL, entry.LastError = state.StatusPosted, result.URL, ""
+			log.Info("posted", "post", result.URL, "format", entry.Format, "captions", result.Captions, "fallback_reason", entry.FallbackReason)
+			return result.URL, a.record(item.GUID, entry)
+		}
 		// Only confirmed pre-click failures avoid the uncertain-outcome delay.
 		entry.LastError = postErr.Error()
+		if next := fallbackFormat(entry.Format, pe); next != "" {
+			if err := a.advanceFormat(ctx, item.GUID, entry, next, postErr.Error()); err != nil {
+				return "", err
+			}
+			continue
+		}
 		entry.Status = state.StatusRetry
 		delay := retryDelay(entry.Attempts)
-		if pe, ok := errors.AsType[*poster.PostError](postErr); !ok || pe.Clicked {
+		if !known || pe.Clicked {
 			entry.Status = state.StatusUncertain
 			delay = max(delay, uncertainMinimum)
 		}
-		entry.NextAttemptAt = now.Add(delay)
+		entry.NextAttemptAt = a.now().Add(delay)
 		log.Warn("post failed; will reconcile before retrying", "status", entry.Status, "attempts", entry.Attempts, "next_attempt_at", entry.NextAttemptAt, "error", postErr)
+		return "", a.record(item.GUID, entry)
 	}
-	return url, a.record(item.GUID, entry)
+}
+
+// fallbackFormat requires a confirmed pre-click failure in the selected medium.
+func fallbackFormat(format string, err *poster.PostError) string {
+	if err == nil || err.Clicked {
+		return ""
+	}
+	switch {
+	case (format == "video_captions" || format == "video") && err.Stage == "video":
+		return "image"
+	case format == "image" && err.Stage == "image":
+		return "text"
+	default:
+		return ""
+	}
+}
+
+// advanceFormat persists a downgrade before any work on the next format.
+func (a *app) advanceFormat(ctx context.Context, guid string, entry *state.Entry, format, reason string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	slog.Info("media fallback", "title", entry.Title, "from", entry.Format, "to", format, "reason", reason)
+	entry.Format, entry.FallbackReason = format, reason
+	entry.Status = state.StatusRetry
+	if err := a.record(guid, entry); err != nil {
+		return fmt.Errorf("save fallback state: %w", err)
+	}
+	return nil
+}
+
+// prepareMedia only descends the chain, retaining the existing download protections.
+func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.Entry) (*article.Image, *article.Video, error) {
+	if entry.Format == "" {
+		entry.Format = "image"
+		if item.VideoURL != "" {
+			entry.Format = "video_captions"
+		}
+	}
+	for {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
+		var err error
+		var next string
+		switch entry.Format {
+		case "video_captions", "video":
+			var video *article.Video
+			video, err = article.FetchVideo(ctx, a.http, item.VideoURL)
+			if err == nil {
+				return nil, video, nil
+			}
+			next = "image"
+		case "image":
+			var img *article.Image
+			img, err = article.FetchImage(ctx, a.http, item.Link)
+			if err == nil {
+				return img, nil, nil
+			}
+			next = "text"
+		case "text":
+			return nil, nil, nil
+		default:
+			return nil, nil, fmt.Errorf("unknown publication format %q", entry.Format)
+		}
+		if err := a.advanceFormat(ctx, item.GUID, entry, next, err.Error()); err != nil {
+			return nil, nil, err
+		}
+	}
 }
 
 // retryDelay doubles from retryInitial per attempt, up to retryMaximum.

@@ -8,6 +8,24 @@ const MAX_VIDEO_MS = 20 * 60_000;
 const SRT_CUE = /^(\d+)\n(\d{2}:[0-5]\d:[0-5]\d,\d{3}) --> (\d{2}:[0-5]\d:[0-5]\d,\d{3})\n\S[^]*$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
+// Only the transcription's own failure is optional; caller cancellation must escape.
+export async function prepareSubtitles(videoFile, { signal, skip = false, dryRun = false, ...options } = {}) {
+  signal?.throwIfAborted();
+  if (dryRun) return { captions: 'unverified' };
+  if (skip) return { captions: 'none' };
+  if (!(options.apiKey ?? process.env.ELEVENLABS_API_KEY)) {
+    return { captions: 'none', fallbackReason: 'ElevenLabs key absent' };
+  }
+  try {
+    const srt = await generateSubtitles(videoFile, { ...options, signal });
+    signal?.throwIfAborted();
+    return { srt, captions: 'attached' };
+  } catch (err) {
+    signal?.throwIfAborted();
+    return { captions: 'none', fallbackReason: `caption generation: ${err.message}` };
+  }
+}
+
 // SRT timestamp (HH:MM:SS,mmm) in milliseconds.
 function milliseconds(time) {
   const [hours, minutes, seconds, ms] = time.split(/[:,]/).map(Number);
@@ -18,6 +36,7 @@ function milliseconds(time) {
 export async function generateSubtitles(videoFile, {
   apiKey = process.env.ELEVENLABS_API_KEY,
   signal,
+  timeoutMs = SUBTITLE_TIMEOUT_MS,
 } = {}) {
   if (!apiKey) throw new Error('ELEVENLABS_API_KEY is required for video subtitles');
   const form = new FormData();
@@ -33,7 +52,7 @@ export async function generateSubtitles(videoFile, {
   }]));
   // Stream from disk to keep the MP4 out of the JS heap.
   form.set('file', await openAsBlob(videoFile, { type: 'video/mp4' }), 'video.mp4');
-  const timeout = AbortSignal.timeout(SUBTITLE_TIMEOUT_MS);
+  const timeout = AbortSignal.timeout(timeoutMs);
   const response = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
     method: 'POST', headers: { 'xi-api-key': apiKey }, body: form, redirect: 'error',
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,

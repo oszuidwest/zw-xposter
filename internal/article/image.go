@@ -48,6 +48,9 @@ func FetchImage(ctx context.Context, client *http.Client, pageURL string) (*Imag
 	if err != nil {
 		return nil, fmt.Errorf("fetch image %s: %w", imageURL, err)
 	}
+	if len(img) == 0 {
+		return nil, errors.New("image is empty")
+	}
 	mediaType, _, _ := mime.ParseMediaType(contentType)
 	switch mediaType {
 	case "image/jpeg", "image/png", "image/webp", "image/gif":

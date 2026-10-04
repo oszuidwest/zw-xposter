@@ -369,7 +369,7 @@ func TestPollCancellationDuringPostBecomesUncertain(t *testing.T) {
 }
 
 func TestPollDoesNotPostWhenWriteAheadSaveFails(t *testing.T) {
-	fixture := newPollTest(t, &pollTestOptions{})
+	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusRetry, Format: "text"}})
 	blockStateSave(t, fixture.app.cfg.StateFile)
 
 	fixture.assertPollFailsUnchanged("write-ahead", 1)

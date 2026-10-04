@@ -30,6 +30,8 @@ type Entry struct {
 	FoundOnX          bool      `json:"found_on_x,omitempty"` // found on X, possibly our own earlier attempt
 	Attempts          int       `json:"attempts,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`
+	Format            string    `json:"format,omitempty"` // video_captions, video, image or text; empty in legacy state
+	FallbackReason    string    `json:"fallback_reason,omitempty"`
 	PublishedAt       time.Time `json:"published_at,omitzero"`
 	NextAttemptAt     time.Time `json:"next_attempt_at,omitzero"`
 	ReplayRequestedAt time.Time `json:"replay_requested_at,omitzero"`
@@ -61,6 +63,11 @@ func Load(path string) (*Store, error) {
 	}
 	s.exists = true
 	for guid := range s.Items {
+		switch s.Items[guid].Format {
+		case "", "video_captions", "video", "image", "text":
+		default:
+			return nil, fmt.Errorf("state entry %q has unknown format %q", guid, s.Items[guid].Format)
+		}
 		if status := s.Items[guid].Status; !validStatus(status) {
 			return nil, fmt.Errorf("state entry %q has unknown status %q", guid, status)
 		}

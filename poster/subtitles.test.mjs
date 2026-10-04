@@ -5,11 +5,53 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { generateSubtitles } from './subtitles.mjs';
+import { generateSubtitles, prepareSubtitles } from './subtitles.mjs';
 
 const srt = '1\n00:00:01,200 --> 00:00:03,400\nNieuws uit café West.\n\n';
 const transcript = (content = srt, base64 = false) => JSON.stringify({
   additional_formats: [{ requested_format: 'srt', is_base64_encoded: base64, content }],
+});
+
+test('optional captions downgrade failures but preserve caller cancellation', async (t) => {
+  await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'optional-subtitles-'));
+  const file = path.join(directory.path, 'video.mp4');
+  await writeFile(file, 'video');
+  await t.test('absent key, persisted downgrade and dry run make no paid request', async (t) => {
+    t.mock.method(globalThis, 'fetch', () => { throw new Error('unexpected paid request'); });
+    assert.deepEqual(await prepareSubtitles('/nonexistent', { apiKey: '' }), { captions: 'none', fallbackReason: 'ElevenLabs key absent' });
+    assert.deepEqual(await prepareSubtitles('/nonexistent', { skip: true, apiKey: 'key' }), { captions: 'none' });
+    assert.deepEqual(await prepareSubtitles('/nonexistent', { dryRun: true, apiKey: 'key' }), { captions: 'unverified' });
+  });
+  for (const status of [401, 429, 503]) await t.test(`HTTP ${status}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => new globalThis.Response('', { status }));
+    const result = await prepareSubtitles(file, { apiKey: 'key' });
+    assert.equal(result.captions, 'none');
+    assert.match(result.fallbackReason, new RegExp(`HTTP ${status}`));
+  });
+  for (const content of ['', 'invalid', undefined]) await t.test(`unusable SRT ${content}`, async (t) => {
+    t.mock.method(globalThis, 'fetch', async () => new globalThis.Response(content === undefined ? '{}' : transcript(content)));
+    assert.equal((await prepareSubtitles(file, { apiKey: 'key' })).captions, 'none');
+  });
+  for (const caller of [false, true]) await t.test(caller ? 'caller cancellation escapes' : 'dedicated timeout downgrades', async (t) => {
+    const received = Promise.withResolvers();
+    const server = http.createServer(() => received.resolve());
+    t.after(async () => { server.closeAllConnections(); await server[Symbol.asyncDispose](); });
+    server.listen(0, '127.0.0.1');
+    await once(server, 'listening');
+    const realFetch = globalThis.fetch;
+    t.mock.method(globalThis, 'fetch', (url, options) => realFetch(`http://127.0.0.1:${server.address().port}`, options));
+    const controller = new AbortController();
+    const result = prepareSubtitles(file, { apiKey: 'key', signal: controller.signal, timeoutMs: caller ? 5000 : 50 });
+    if (caller) {
+      const rejected = assert.rejects(result, { name: 'AbortError' });
+      await received.promise;
+      controller.abort();
+      await rejected;
+    } else {
+      assert.equal((await result).captions, 'none');
+      assert.equal(controller.signal.aborted, false);
+    }
+  });
 });
 
 test('generates subtitles and rejects unusable transcripts', async (t) => {

@@ -21,6 +21,7 @@ func TestFetchImage(t *testing.T) {
 		{name: "missing content", tag: `<meta property="og:image">`, wantErr: "no content"},
 		{name: "unsupported media", tag: `<meta property="og:image" content="%s">`, mime: "text/html", imageStatus: 200, size: 8, wantErr: "unsupported image type"},
 		{name: "missing image", tag: `<meta property="og:image" content="%s">`, imageStatus: 404, wantErr: "404"},
+		{name: "empty image", tag: `<meta property="og:image" content="%s">`, mime: "image/png", imageStatus: 200, wantErr: "image is empty"},
 		{name: "oversized image", tag: `<meta property="og:image" content="%s">`, mime: "image/png", imageStatus: 200, size: 5<<20 + 1, wantErr: "response exceeds"},
 	}
 	for _, tt := range tests {
