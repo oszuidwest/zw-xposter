@@ -55,7 +55,7 @@ fi
 ) 9>&- &
 pids+=("$!")
 (
-    unset "${!X_@}"
+    unset "${!X_@}" ELEVENLABS_API_KEY
     # Allow slow Chromium starts 90s, matching the healthcheck start period.
     # Browser requests then queue behind the initial session check.
     attempt=0

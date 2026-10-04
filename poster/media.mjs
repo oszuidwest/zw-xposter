@@ -6,6 +6,7 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { URLSearchParams } from 'node:url';
 import { TextDecoder } from 'node:util';
+import xUI from './x-ui.json' with { type: 'json' };
 
 // Must match maxVideoSize in internal/article/video.go. Videos travel as binary, never as JSON/base64.
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
@@ -97,4 +98,20 @@ export async function uploadVideo(page, dialog, file, {
   } finally {
     release.abort();
   }
+}
+
+export async function uploadSubtitles(page, dialog, file, { throwIfCancelled = () => {} } = {}) {
+  if (!file) throw new Error('video subtitles are required');
+  throwIfCancelled();
+  await dialog.getByRole('button', { name: new RegExp(xUI.captionUploadPattern, 'i') }).click();
+  const captions = page.locator('[role="dialog"][aria-modal="true"]').filter({
+    has: page.getByRole('button', { name: new RegExp(xUI.captionDonePattern, 'i') }),
+  });
+  await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles(file);
+  await captions.getByRole('button', { name: new RegExp(xUI.captionRemovePattern, 'i') }).waitFor({ timeout: 60_000 });
+  throwIfCancelled();
+  await captions.getByRole('button', { name: new RegExp(xUI.captionDonePattern, 'i') }).click();
+  // X replaces the upload action with the language or its generic captions label.
+  await dialog.getByText(new RegExp(xUI.captionAttachedPattern, 'i')).waitFor({ timeout: 60_000 });
+  throwIfCancelled();
 }

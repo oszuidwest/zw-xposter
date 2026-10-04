@@ -23,6 +23,22 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   process.env.X_AUTH_TOKEN = 'offline-test';
   process.env.X_PASSWORD = '';
   process.env.HEADLESS = 'true';
+  process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
+  const srt = '1\n00:00:00,000 --> 00:00:02,500\nNieuws uit West-Brabant.\n\n';
+  let failTranscription = false;
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url === 'https://api.elevenlabs.io/v1/speech-to-text') {
+      assert.equal(options.headers['xi-api-key'], 'offline-elevenlabs');
+      assert.equal(options.body.get('language_code'), 'nld');
+      assert.ok(options.body.get('file').size > 0);
+      return new globalThis.Response(JSON.stringify({ additional_formats: [{
+        requested_format: 'srt', is_base64_encoded: false, content: srt,
+      }] }), { status: failTranscription ? 503 : 200 });
+    }
+    assert.equal(new URL(url).hostname, '127.0.0.1', 'no external HTTP in the offline test');
+    return realFetch(url, options);
+  });
 
   const poster = await import('./server.mjs');
   server = poster.server;
@@ -35,6 +51,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   let videoStatusRequested;
   let videoProcessing;
   let uploadedBytes = 0;
+  let uploadedCaptions;
+  let captionsRequested;
+  let captionsAccepted;
   const published = [];
   const unexpected = [];
   await context.route('**/*', async (route) => {
@@ -43,6 +62,12 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
     if (url.origin !== 'https://x.com') {
       unexpected.push(request.url());
       return route.abort();
+    }
+    if (url.pathname === '/offline/captions') {
+      uploadedCaptions = request.postData();
+      captionsRequested.resolve();
+      await captionsAccepted.promise;
+      return route.fulfill({ status: 200, body: '' });
     }
     if (url.pathname === '/i/media/upload.json') {
       const command = url.searchParams.get('command');
@@ -92,10 +117,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   const post = (text, signal) => fetch(`${base}/post`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal,
   });
-  const postVideo = (text, bytes) => fetch(`${base}/post-video`, {
+  const postVideo = (text, bytes, signal) => fetch(`${base}/post-video`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64') },
     body: bytes,
+    signal,
   });
 
   await t.test('validates requests before browser work and keeps readiness passive', async () => {
@@ -159,6 +185,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   await t.test('binary videos larger than the JSON limit wait for encoding before posting', async () => {
     videoStatusRequested = Promise.withResolvers();
     videoProcessing = Promise.withResolvers();
+    captionsRequested = Promise.withResolvers();
+    captionsAccepted = Promise.withResolvers();
     const before = [...published];
     const bytes = Buffer.alloc(21 * 1024 * 1024, 1);
     const response = postVideo('Video café 🎥', bytes);
@@ -166,10 +194,45 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
     assert.equal(uploadedBytes, bytes.length);
     assert.deepEqual(published, before, 'a preview and enabled button do not mean the video is ready');
     videoProcessing.resolve();
+    await captionsRequested.promise;
+    assert.equal(uploadedCaptions, srt);
+    assert.deepEqual(published, before, 'caption selection alone must not allow publication');
+    captionsAccepted.resolve();
     const result = await response;
     assert.equal(result.status, 200);
     assert.match((await result.json()).url, /\/status\//);
     assert.equal(published.at(-1), 'Video café 🎥');
+  });
+
+  await t.test('failed transcription never opens the composer or publishes', async () => {
+    failTranscription = true;
+    const before = [...published];
+    const response = await postVideo('No subtitles', Buffer.from('synthetic MP4'));
+    assert.equal(response.status, 500);
+    const result = await response.json();
+    assert.equal(result.clicked, false);
+    assert.match(result.error, /ElevenLabs transcription returned HTTP 503/);
+    assert.deepEqual(published, before);
+    failTranscription = false;
+  });
+
+  await t.test('disconnect while captions load prevents publication', async () => {
+    videoStatusRequested = Promise.withResolvers();
+    videoProcessing = Promise.withResolvers();
+    videoProcessing.resolve();
+    captionsRequested = Promise.withResolvers();
+    captionsAccepted = Promise.withResolvers();
+    const before = [...published];
+    const controller = new AbortController();
+    const response = postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal);
+    const aborted = assert.rejects(response, { name: 'AbortError' });
+    await captionsRequested.promise;
+    controller.abort();
+    await aborted;
+    captionsAccepted.resolve();
+    // Queue behind cleanup to prove the abandoned composer never publishes.
+    assert.equal((await fetch(`${base}/recent?hours=1`)).status, 200);
+    assert.deepEqual(published, before);
   });
 
   await t.test('failed video processing never clicks Post', async () => {

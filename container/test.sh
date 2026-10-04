@@ -18,6 +18,7 @@ docker run --rm --network none --user 0 \
 
 start() {
     docker run -d --name "$container" "${offline[@]}" -e GRAPH_CLIENT_SECRET=offline-test \
+        -e ELEVENLABS_API_KEY=offline-test \
         "$image" bash -c "$serve_fresh" _ >/dev/null
     for ((attempt=0; attempt<100; attempt++)); do
         if docker exec "$container" node -e '
@@ -100,6 +101,7 @@ for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
     assert.match(fs.readFileSync(`/proc/${pid}/status`, 'utf8'), /Uid:\s+1000\s+1000/);
     const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
     assert.ok(!env.some(value => value.startsWith(role === 'orchestrator' ? 'X_AUTH_TOKEN=' : 'GRAPH_CLIENT_SECRET=')));
+    if (role !== 'node') assert.ok(!env.some(value => value.startsWith('ELEVENLABS_API_KEY=')));
     pids[role] = Number(pid);
 }
 assert.deepEqual(Object.keys(pids).sort(), ['Xvfb', 'node', 'orchestrator']);
