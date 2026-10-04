@@ -33,7 +33,6 @@ type graphClient struct {
 	tokenURL     string
 	baseURL      string
 	httpClient   *http.Client
-	wait         func(context.Context, time.Duration) error
 
 	token       string
 	tokenExpiry time.Time
@@ -70,8 +69,10 @@ func (c *graphClient) SendMail(ctx context.Context, recipients []string, subject
 	var retryWait time.Duration
 	for attempt := range graphMaxAttempts {
 		if retryWait > 0 {
-			if err := c.waitForRetry(ctx, retryWait); err != nil {
-				return fmt.Errorf("wait to retry Graph mail: %w", err)
+			select {
+			case <-ctx.Done():
+				return fmt.Errorf("wait to retry Graph mail: %w", ctx.Err())
+			case <-time.After(retryWait):
 			}
 		}
 		retry, retryAfter, err := c.sendAttempt(ctx, payload)
@@ -166,18 +167,6 @@ func (c *graphClient) accessToken(ctx context.Context) (string, error) {
 	c.token = token.AccessToken
 	c.tokenExpiry = time.Now().Add(time.Duration(token.ExpiresIn) * time.Second)
 	return c.token, nil
-}
-
-func (c *graphClient) waitForRetry(ctx context.Context, delay time.Duration) error {
-	if c.wait != nil {
-		return c.wait(ctx, delay)
-	}
-	select {
-	case <-ctx.Done():
-		return ctx.Err()
-	case <-time.After(delay):
-		return nil
-	}
 }
 
 func retryAfterDelay(value string) time.Duration {

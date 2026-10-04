@@ -3,11 +3,14 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
@@ -62,41 +65,47 @@ func TestGraphClientGetsTokenAndSendsMail(t *testing.T) {
 }
 
 func TestGraphClientRetriesTransientFailure(t *testing.T) {
-	requests, tokens := 0, 0
-	server := testutil.Server(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/token" {
-			tokens++
-			testutil.JSON(t, w, http.StatusOK, map[string]any{"access_token": fmt.Sprintf("token-%d", tokens), "expires_in": 3600})
-			return
+	synctest.Test(t, func(t *testing.T) {
+		requests, tokens := 0, 0
+		started := time.Now()
+		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if r.URL.Path == "/token" {
+				tokens++
+				testutil.JSON(t, w, http.StatusOK, map[string]any{"access_token": fmt.Sprintf("token-%d", tokens), "expires_in": 3600})
+				return
+			}
+			requests++
+			testutil.Equal(t, r.Header.Get("Authorization"), fmt.Sprintf("Bearer token-%d", tokens))
+			switch requests {
+			case 1:
+				w.Header().Set("Retry-After", "90")
+				http.Error(w, "rate limited", http.StatusTooManyRequests)
+			case 2:
+				testutil.Equal(t, time.Since(started), graphMaxRetryWait)
+				http.Error(w, "token expired", http.StatusUnauthorized)
+			default:
+				w.WriteHeader(http.StatusAccepted)
+			}
+		}))
+		endpoint := "http://example.com"
+		client := &graphClient{
+			fromAddress: "sender@example.com", tokenURL: endpoint + "/token",
+			baseURL: endpoint, httpClient: server.Client(),
 		}
-		requests++
-		testutil.Equal(t, r.Header.Get("Authorization"), fmt.Sprintf("Bearer token-%d", tokens))
-		switch requests {
-		case 1:
-			w.Header().Set("Retry-After", "90")
-			http.Error(w, "rate limited", http.StatusTooManyRequests)
-		case 2:
-			http.Error(w, "token expired", http.StatusUnauthorized)
-		default:
-			w.WriteHeader(http.StatusAccepted)
-		}
-	})
+		testutil.NoError(t, client.SendMail(t.Context(), []string{"ops@example.com"}, "subject", "body"))
+		testutil.Equal(t, requests, 3)
+		testutil.Equal(t, tokens, 2)
+		testutil.Equal(t, time.Since(started), graphMaxRetryWait+2*time.Second)
 
-	var waits []time.Duration
-	client := &graphClient{
-		fromAddress: "sender@example.com", tokenURL: server.URL + "/token",
-		baseURL: server.URL, httpClient: server.Client(),
-		wait: func(_ context.Context, delay time.Duration) error {
-			waits = append(waits, delay)
-			return nil
-		},
-	}
-	testutil.NoError(t, client.SendMail(t.Context(), []string{"ops@example.com"}, "subject", "body"))
-	testutil.Equal(t, requests, 3)
-	testutil.Equal(t, tokens, 2)
-	if len(waits) != 2 || waits[0] != graphMaxRetryWait || waits[1] != 2*time.Second {
-		t.Errorf("waits = %v, want rate-limit cap followed by exponential backoff", waits)
-	}
+		requests = 0
+		ctx, cancel := context.WithTimeout(t.Context(), time.Second)
+		defer cancel()
+		if err := client.SendMail(ctx, []string{"ops@example.com"}, "subject", "body"); !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("cancel during backoff: %v", err)
+		}
+		testutil.Equal(t, requests, 1)
+		testutil.Equal(t, time.Since(started), graphMaxRetryWait+3*time.Second)
+	})
 }
 
 func TestRetryAfterDelay(t *testing.T) {

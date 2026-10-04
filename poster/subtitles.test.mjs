@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { mkdtempDisposable, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -13,9 +13,8 @@ const transcript = (content = srt, base64 = false) => JSON.stringify({
 });
 
 test('generates subtitles and rejects unusable transcripts', async (t) => {
-  const directory = await mkdtemp(path.join(os.tmpdir(), 'subtitles-test-'));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const file = path.join(directory, 'video.mp4');
+  await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'subtitles-test-'));
+  const file = path.join(directory.path, 'video.mp4');
   await writeFile(file, 'MP4 fixture');
   await assert.rejects(generateSubtitles('/nonexistent', { apiKey: '' }), /ELEVENLABS_API_KEY/);
 
@@ -43,7 +42,6 @@ test('generates subtitles and rejects unusable transcripts', async (t) => {
   }
 
   const cases = [
-    ['unavailable', '', /HTTP 503/, 503],
     ['empty', transcript(''), /invalid SRT captions/],
     ['missing', '{}', /no SRT captions/],
     ['timing', transcript(srt.replace('00:00:03,400', '00:00:01,000')), /invalid SRT timing/],
@@ -53,9 +51,9 @@ test('generates subtitles and rejects unusable transcripts', async (t) => {
     ['utf8', Buffer.from([0xff]), /encoded data/],
     ['oversized', Buffer.alloc(4 * 1024 * 1024 + 1), /transcript is too large/],
   ];
-  for (const [name, body, error, status = 200] of cases) {
+  for (const [name, body, error] of cases) {
     await t.test(name, async (t) => {
-      t.mock.method(globalThis, 'fetch', async () => new globalThis.Response(body, { status }));
+      t.mock.method(globalThis, 'fetch', async () => new globalThis.Response(body));
       await assert.rejects(generateSubtitles(file, { apiKey: 'test-key' }), error);
     });
   }

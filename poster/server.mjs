@@ -360,12 +360,15 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-// video is server-owned; request payloads must never supply local paths.
-async function createPost({ text, image, dryRun }, clientGone, video) {
+// videoFile is server-owned; request payloads must never supply local paths.
+async function createPost({ text, image, dryRun }, signal, videoFile) {
   const throwIfGone = () => {
-    if (clientGone()) throw new Error('client disconnected before clicking post');
+    if (signal.aborted) throw new Error('client disconnected before clicking post');
   };
   // The request may have waited in the queue behind other browser work.
+  throwIfGone();
+  if (videoFile) log('generating Dutch subtitles');
+  const subtitles = videoFile ? await generateSubtitles(videoFile, { signal }) : undefined;
   throwIfGone();
   const page = await getTab();
   let clicked = false;
@@ -386,10 +389,10 @@ async function createPost({ text, image, dryRun }, clientGone, video) {
     await humanClick(page, box);
     await humanType(page, text);
 
-    if (video) {
-      await uploadVideo(page, dialog, video.file, { throwIfCancelled: throwIfGone });
+    if (videoFile) {
+      await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
       await acknowledgeNotice(page);
-      await uploadSubtitles(page, dialog, video.subtitles, { throwIfCancelled: throwIfGone });
+      await uploadSubtitles(page, dialog, subtitles, { throwIfCancelled: throwIfGone });
     } else if (image) {
       await pause(800, 2000);
       await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
@@ -489,27 +492,13 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-// Aborts when the client disconnects, including while the request waits in the queue.
-function disconnectSignal(res) {
+async function postAndSend(res, post, videoFile) {
+  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
   const controller = new AbortController();
   if (res.destroyed) controller.abort();
   else res.once('close', () => controller.abort());
-  return controller.signal;
-}
-
-async function postAndSend(res, post, videoFile) {
-  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
-  const disconnected = disconnectSignal(res);
   // Transcribe inside the queue so posts keep their request order.
-  const result = await exclusive(async () => {
-    let video;
-    if (videoFile) {
-      if (disconnected.aborted) throw new Error('client disconnected before transcription');
-      log('generating Dutch subtitles');
-      video = { file: videoFile, subtitles: await generateSubtitles(videoFile, { signal: disconnected }) };
-    }
-    return createPost(post, () => disconnected.aborted, video);
-  });
+  const result = await exclusive(() => createPost(post, controller.signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
 }

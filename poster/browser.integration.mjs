@@ -1,24 +1,15 @@
 // Run explicitly (or through container/test.sh); the unit suite needs no browser.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtempDisposable, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async (t) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'poster-workflow-'));
-  let context;
-  let server;
-  t.after(async () => {
-    try {
-      await context?.close();
-      if (server?.listening) await server[Symbol.asyncDispose]();
-    } finally {
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
-  process.env.DATA_DIR = dataDir;
+  const cleanup = new AsyncDisposableStack();
+  t.after(() => cleanup.disposeAsync());
+  process.env.DATA_DIR = cleanup.use(await mkdtempDisposable(path.join(os.tmpdir(), 'poster-workflow-'))).path;
   process.env.X_USERNAME = 'fixture_account';
   process.env.X_AUTH_TOKEN = 'offline-test';
   process.env.X_PASSWORD = '';
@@ -38,8 +29,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   });
 
   const poster = await import('./server.mjs');
-  server = poster.server;
-  context = await poster.launch();
+  const server = poster.server;
+  cleanup.defer(async () => {
+    if (server.listening) await server[Symbol.asyncDispose]();
+  });
+  const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
   const pageHTML = await fixture('browser-page.html');
   let rejectPost = false;
@@ -50,6 +44,12 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   let uploadedBytes = 0;
   let captionsRequested;
   let captionsAccepted;
+  t.beforeEach(() => {
+    videoStatusRequested = Promise.withResolvers();
+    videoProcessing = Promise.withResolvers();
+    captionsRequested = Promise.withResolvers();
+    captionsAccepted = Promise.withResolvers();
+  });
   const published = [];
   const unexpected = [];
   await context.route('**/*', async (route) => {
@@ -152,11 +152,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   });
 
   for (const video of [false, true]) await t.test(`cancelled ${video ? 'captions' : 'text'} never publishes`, async () => {
-    videoStatusRequested = Promise.withResolvers();
-    videoProcessing = Promise.withResolvers();
     videoProcessing.resolve();
-    captionsRequested = Promise.withResolvers();
-    captionsAccepted = Promise.withResolvers();
     const before = [...published];
     const controller = new AbortController();
     const response = video ? postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal)
@@ -185,10 +181,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   });
 
   await t.test('binary videos larger than the JSON limit wait for encoding before posting', async () => {
-    videoStatusRequested = Promise.withResolvers();
-    videoProcessing = Promise.withResolvers();
-    captionsRequested = Promise.withResolvers();
-    captionsAccepted = Promise.withResolvers();
     const before = [...published];
     const bytes = Buffer.alloc(21 * 1024 * 1024, 1);
     const response = postVideo('Video café 🎥', bytes);
@@ -208,8 +200,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   for (const transcription of [true, false]) await t.test(`failed ${transcription ? 'transcription' : 'encoding'} never posts`, async () => {
     failTranscription = transcription;
     failVideo = !transcription;
-    videoStatusRequested = Promise.withResolvers();
-    videoProcessing = Promise.withResolvers();
     videoProcessing.resolve();
     const before = [...published];
     const response = await postVideo('Bad video', Buffer.from('synthetic MP4'));

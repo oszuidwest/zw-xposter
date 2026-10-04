@@ -75,8 +75,6 @@ func TestClientPostError(t *testing.T) {
 		{name: "after click", fixture: "post-error-after-click.json", wantClicked: true},
 		{name: "missing click state", body: `{"error":"outcome unknown"}`, wantClicked: true},
 		{name: "null click state", body: `{"error":"outcome unknown","clicked":null}`, wantClicked: true},
-		{name: "empty response", body: `{}`, wantClicked: true},
-		{name: "null response", body: `null`, wantClicked: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

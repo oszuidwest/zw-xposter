@@ -59,17 +59,6 @@ func TestValidateURL(t *testing.T) {
 	}
 }
 
-type redirectTransport map[string]string
-
-func (r redirectTransport) RoundTrip(req *http.Request) (*http.Response, error) {
-	resp := &http.Response{StatusCode: http.StatusOK, Header: http.Header{}, Body: http.NoBody, Request: req}
-	if location, ok := r[req.URL.String()]; ok {
-		resp.StatusCode = http.StatusFound
-		resp.Header.Set("Location", location)
-	}
-	return resp, nil
-}
-
 func TestClientValidatesEveryRedirectTarget(t *testing.T) {
 	tests := []struct {
 		name     string
@@ -84,9 +73,12 @@ func TestClientValidatesEveryRedirectTarget(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			client, err := New("https://www.zuidwestupdate.nl/feed/", nil)
 			testutil.NoError(t, err)
-			client.Transport.(*allowlistTransport).base = redirectTransport{
-				"https://www.zuidwestupdate.nl/start": tt.location,
-			}
+			server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				if r.URL.Path == "/start" {
+					http.Redirect(w, r, tt.location, http.StatusFound)
+				}
+			}))
+			client.Transport.(*allowlistTransport).base = server.Client().Transport
 
 			resp, err := client.Get("https://www.zuidwestupdate.nl/start")
 			if err == nil {

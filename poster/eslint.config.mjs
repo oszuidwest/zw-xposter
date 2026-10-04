@@ -7,6 +7,7 @@ export default [
       globals: {
         AbortController: 'readonly',
         AbortSignal: 'readonly',
+        AsyncDisposableStack: 'readonly',
         Buffer: 'readonly',
         console: 'readonly',
         document: 'readonly',
