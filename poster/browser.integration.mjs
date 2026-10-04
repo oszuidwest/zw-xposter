@@ -47,7 +47,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 240_000 }, async
         body: await fixture(rejectPost ? 'create-tweet-without-id.json' : 'create-tweet-with-id.json'),
       });
     }
-    if (url.pathname.endsWith('/UserTweets')) {
+    if (url.pathname.endsWith('/UserOriginalsTimeline')) {
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
       if (failPagination && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });

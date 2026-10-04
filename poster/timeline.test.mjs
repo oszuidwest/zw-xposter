@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   createTimelineCollector,
   isFirstUserTweetsPage,
+  isUserTimelineResponse,
   parseCreateTweetResponse,
   parseUserTweetsPayload,
   postErrorResponse,
@@ -298,6 +299,14 @@ test('recognizes only a UserTweets request without a cursor as the first page', 
   assert.equal(isFirstUserTweetsPage('https://api.x.invalid/UserTweets?variables=%7B%22cursor%22%3A%22next%22%7D'), false);
   assert.equal(isFirstUserTweetsPage('https://api.x.invalid/UserTweets?variables=not-json'), false);
   assert.equal(isFirstUserTweetsPage('https://api.x.invalid/UserTweets'), false);
+});
+
+test('recognizes both operation names for the own profile timeline', () => {
+  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweets?variables=%7B%7D'), true);
+  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserOriginalsTimeline?variables=%7B%7D'), true);
+  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweetsAndReplies'), false);
+  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/HomeTimeline'), false);
+  assert.equal(isUserTimelineResponse('not a url'), false);
 });
 
 test('reports why a timeline is incomplete', async () => {
