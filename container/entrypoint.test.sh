@@ -23,7 +23,7 @@ chmod +x /tmp/bin/node /app/orchestrator
 run() {
     local expected=$1 status=0
     shift
-    # Isolate locks: the shutdown watchdog's sleep may outlive its parent.
+    # Fresh state isolates profile locks inherited by the shutdown watchdog's sleep.
     DATA_DIR=$(mktemp -d) timeout 120 /app/entrypoint.sh "$@" >/tmp/startup.log 2>&1 || status=$?
     if [[ $status != "$expected" ]]; then
         cat /tmp/startup.log

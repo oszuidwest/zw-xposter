@@ -115,7 +115,12 @@ JS
 done
 
 # One-shot mode must propagate the offline feed failure after browser startup.
+# Match the cause too: startup failures in entrypoint.sh also exit 1.
 status=0
-docker run --rm "${offline[@]}" -e DRY_RUN=true "$image" bash -c "$serve_fresh" _ -once || status=$?
-[[ $status == 1 ]]
+output=$(docker run --rm "${offline[@]}" -e DRY_RUN=true "$image" bash -c "$serve_fresh" _ -once 2>&1) || status=$?
+if [[ $status != 1 || $output != *'fetch feed'* ]]; then
+    printf '%s\n' "$output" >&2
+    echo "one-shot exited $status without the expected feed failure" >&2
+    exit 1
+fi
 echo 'PASS: one-shot shutdown preserves the poll failure'

@@ -107,7 +107,7 @@ func run(opts options, contentHTTP *http.Client) error {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	// Subtract the margin to avoid overflow while requiring full duplicate-check coverage.
+	// Subtract the margin to check MAX_AGE + margin without overflow.
 	if cfg.MaxAge > poster.MaxLookback-recentMargin {
 		return fmt.Errorf("MAX_AGE must be at most %s, because the poster reads at most %s of X history, got %s",
 			poster.MaxLookback-recentMargin, poster.MaxLookback, cfg.MaxAge)
@@ -369,13 +369,13 @@ func (a *app) processItem(ctx context.Context, item feed.Item, workflow *pollSta
 		return nil
 	}
 	entry := a.store.Items[item.GUID]
-	// Refresh metadata from the current feed, including replayed items.
+	// The feed is authoritative for listed items' metadata, including replays.
 	entry.Title, entry.Link, entry.PublishedAt = item.Title, item.Link, item.Published
 	if a.expired(&entry, workflow.now) {
 		return a.recordExpired(item.GUID, &entry)
 	}
 	if age := workflow.now.Sub(item.Published); age > workflow.lookback {
-		// A replay can outlive the poster's history window.
+		// Only replays get here: unexpired items are within MAX_AGE, inside the lookback.
 		entry.Status = state.StatusFailedTerminal
 		entry.LastError = fmt.Sprintf("article is %d hours old, beyond the %d hours of X history the poster can check; check X manually",
 			poster.LookbackHours(age), poster.MaxLookbackHours)
