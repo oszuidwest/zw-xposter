@@ -473,11 +473,20 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 	log := slog.With("title", item.Title, "link", item.Link)
 	text := postText(item)
 
-	var img *article.Image
-	var video *article.Video
+	var (
+		img   *article.Image
+		video *article.Video
+		err   error
+	)
 	if item.VideoURL != "" {
-		var err error
 		video, err = article.FetchVideo(ctx, a.http, item.VideoURL)
+		if errors.Is(err, article.ErrUnsupportedVideo) {
+			// Video takes priority over the image, so an unpostable video ends the workflow.
+			entry.Status = state.StatusFailedTerminal
+			entry.LastError = fmt.Sprintf("featured video cannot be posted; retrying will not help: %v", err)
+			log.Error("featured video cannot be posted and needs manual review", "video", item.VideoURL, "error", err)
+			return "", a.record(item.GUID, entry)
+		}
 		if err != nil {
 			entry.Status = state.StatusRetry
 			entry.Attempts++
@@ -492,7 +501,6 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 			}
 		}()
 	} else {
-		var err error
 		img, err = article.FetchImage(ctx, a.http, item.Link)
 		if err != nil {
 			// Keep the article link useful even when its share image is unavailable.

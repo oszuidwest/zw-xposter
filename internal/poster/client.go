@@ -82,6 +82,7 @@ func (c *Client) Post(ctx context.Context, text string, img *article.Image) (str
 
 // PostVideo streams an MP4 instead of buffering a base64 copy in JSON.
 func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader) (string, error) {
+	// NopCloser stops the transport from closing a caller-owned *article.Video.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post-video", io.NopCloser(video))
 	if err != nil {
 		return "", fmt.Errorf("create video post: %w", err)

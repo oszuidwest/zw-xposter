@@ -52,12 +52,15 @@ function uploadFixture() {
       }) };
     },
   };
-  const emit = (body, { status = 200, command = 'STATUS', host = 'upload.x.com' } = {}) => page.emit('response', {
-    url: () => `https://${host}/i/media/upload.json?command=${command}`,
+  const emit = (body, { status = 200, command = 'STATUS', host = 'upload.x.com', form = false } = {}) => page.emit('response', {
+    url: () => `https://${host}/i/media/upload.json${form ? '' : `?command=${command}`}`,
     status: () => status,
     ok: () => status < 400,
     json: async () => body,
-    request: () => ({ headers: () => ({}) }),
+    request: () => ({
+      headers: () => (form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}),
+      postData: () => `command=${command}&media_id=123`,
+    }),
   });
   return { page, dialog, selected: selected.promise, emit, previews: () => previews };
 }
@@ -82,12 +85,17 @@ test('video upload waits for processing success, ignoring previews and other med
   assert.equal(f.page.listenerCount('response'), 0);
 });
 
-test('synchronous FINALIZE succeeds without processing_info', async () => {
-  const f = uploadFixture();
-  const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', { timeoutMs: 1000 });
-  await f.selected;
-  f.emit({ media_id_string: '123' }, { command: 'FINALIZE' });
-  await upload;
+test('synchronous FINALIZE succeeds without processing_info', async (t) => {
+  for (const form of [false, true]) {
+    await t.test(form ? 'form body' : 'query string', async () => {
+      const f = uploadFixture();
+      const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', { timeoutMs: 1000 });
+      await f.selected;
+      f.emit({ media_id_string: '123' }, { command: 'INIT', form });
+      f.emit({ media_id_string: '123' }, { command: 'FINALIZE', form });
+      await upload;
+    });
+  }
 });
 
 test('upload errors, failed encoding, timeout and cancellation prevent posting', async (t) => {

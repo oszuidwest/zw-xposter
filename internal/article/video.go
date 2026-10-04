@@ -5,15 +5,20 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"mime"
 	"net/http"
 	"os"
 	"time"
+
+	"github.com/oszuidwest/zw-xposter/internal/safehttp"
 )
 
-// MaxVideoSize also bounds the streamed body in poster/media.mjs.
-const MaxVideoSize = 512 << 20
+// maxVideoSize also bounds the streamed body in poster/media.mjs.
+const maxVideoSize = 512 << 20
+
+// ErrUnsupportedVideo marks a video that no retry can post: not a readable MP4,
+// over the size limit, or outside X's duration limits.
+var ErrUnsupportedVideo = errors.New("unsupported video")
 
 // Video holds a downloaded MP4 on disk, ready to stream to the poster.
 type Video struct {
@@ -26,28 +31,26 @@ func (v *Video) Close() error {
 }
 
 // FetchVideo downloads a bounded MP4 through the same URL and redirect policy as images.
-func FetchVideo(ctx context.Context, client *http.Client, videoURL string) (_ *Video, err error) {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, videoURL, http.NoBody)
-	if err != nil {
-		return nil, fmt.Errorf("create video request: %w", err)
-	}
+// A video X cannot accept returns an error wrapping ErrUnsupportedVideo.
+func FetchVideo(ctx context.Context, client *http.Client, videoURL string) (*Video, error) {
+	return fetchVideo(ctx, client, videoURL, maxVideoSize)
+}
+
+func fetchVideo(ctx context.Context, client *http.Client, videoURL string, limit int64) (_ *Video, err error) {
 	// A large video needs more time; retain the content client's transport protections.
 	downloadClient := *client
 	downloadClient.Timeout = 5 * time.Minute
-	resp, err := downloadClient.Do(req)
+	resp, err := safehttp.Open(ctx, &downloadClient, videoURL)
 	if err != nil {
 		return nil, fmt.Errorf("fetch video: %w", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
-	if resp.StatusCode != http.StatusOK {
-		return nil, fmt.Errorf("fetch video: status %s", resp.Status)
-	}
 	mediaType, _, _ := mime.ParseMediaType(resp.Header.Get("Content-Type"))
 	if mediaType != "video/mp4" {
-		return nil, fmt.Errorf("unsupported video type %q", resp.Header.Get("Content-Type"))
+		return nil, fmt.Errorf("%w type %q; only video/mp4 is supported", ErrUnsupportedVideo, resp.Header.Get("Content-Type"))
 	}
-	if resp.ContentLength > MaxVideoSize {
-		return nil, fmt.Errorf("video exceeds %d bytes", MaxVideoSize)
+	if resp.ContentLength > limit {
+		return nil, fmt.Errorf("%w: exceeds %d bytes", ErrUnsupportedVideo, limit)
 	}
 	file, err := os.CreateTemp("", "xposter-video-*.mp4")
 	if err != nil {
@@ -56,17 +59,26 @@ func FetchVideo(ctx context.Context, client *http.Client, videoURL string) (_ *V
 	video := &Video{File: file}
 	defer func() {
 		if err != nil {
-			if closeErr := video.Close(); closeErr != nil {
-				slog.Warn("remove failed video download", "error", closeErr)
-			}
+			err = errors.Join(err, video.Close())
 		}
 	}()
-	size, err := io.Copy(file, io.LimitReader(resp.Body, MaxVideoSize+1))
+	size, err := io.Copy(file, io.LimitReader(resp.Body, limit+1))
 	if err != nil {
 		return nil, fmt.Errorf("download video: %w", err)
 	}
-	if size == 0 || size > MaxVideoSize {
-		return nil, fmt.Errorf("video size %d is outside 1..%d bytes", size, MaxVideoSize)
+	if size > limit {
+		return nil, fmt.Errorf("%w: exceeds %d bytes", ErrUnsupportedVideo, limit)
+	}
+	if size == 0 {
+		return nil, errors.New("video is empty")
+	}
+	duration, err := mp4Duration(file)
+	if err != nil {
+		return nil, fmt.Errorf("read video duration: %w", err)
+	}
+	// An unrecorded duration is left to X's own check.
+	if duration != 0 && (duration < minVideoDuration || duration > maxVideoDuration) {
+		return nil, fmt.Errorf("%w: duration %s is outside %s..%s", ErrUnsupportedVideo, duration.Round(time.Millisecond), minVideoDuration, maxVideoDuration)
 	}
 	if _, err := file.Seek(0, io.SeekStart); err != nil {
 		return nil, fmt.Errorf("rewind video: %w", err)

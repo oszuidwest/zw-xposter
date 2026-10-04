@@ -12,6 +12,7 @@
 </section>
 <article>Offline timeline</article>
 <script>
+  let noticeShown = false;
   document.querySelector('[data-testid=fileInput]').onchange = async (event) => {
     const file = event.target.files[0];
     const preview = document.createElement(file.type === 'video/mp4' ? 'video' : 'img');
@@ -22,6 +23,15 @@
     await fetch('/i/media/upload.json?command=APPEND', { method: 'POST', body: file });
     await fetch('/i/media/upload.json?command=FINALIZE', { method: 'POST' });
     await fetch('/i/media/upload.json?command=STATUS&media_id=123');
+    // Like X, announce downloadable videos once, in a sheet that covers the composer.
+    if (noticeShown) return;
+    noticeShown = true;
+    const notice = document.createElement('div');
+    notice.setAttribute('role', 'dialog');
+    notice.style.cssText = 'position:fixed;inset:0;background:#fffc';
+    notice.innerHTML = '<button>Got it</button>';
+    notice.querySelector('button').onclick = () => notice.remove();
+    document.body.append(notice);
   };
   document.querySelector('[data-testid=tweetButton]').onclick = async () => {
     await fetch('/i/api/graphql/offline/CreateTweet', {

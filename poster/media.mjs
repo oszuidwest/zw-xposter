@@ -8,9 +8,10 @@ import { clearTimeout, setTimeout } from 'node:timers';
 import { URLSearchParams } from 'node:url';
 import { TextDecoder } from 'node:util';
 
-// Must match article.MaxVideoSize. Videos travel as binary, never as JSON/base64.
+// Must match maxVideoSize in internal/article/video.go. Videos travel as binary, never as JSON/base64.
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
-export const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const VIDEO_RECEIVE_TIMEOUT_MS = 5 * 60_000;
+const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -34,7 +35,7 @@ export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir
   });
   try {
     await pipeline(source, limit, createWriteStream(file, { mode: 0o600, flags: 'wx' }), {
-      signal: AbortSignal.timeout(5 * 60_000),
+      signal: AbortSignal.timeout(VIDEO_RECEIVE_TIMEOUT_MS),
     });
     if (!size) throw new Error('video is empty');
     return { file, cleanup };
@@ -49,18 +50,24 @@ function isMediaUpload(url) {
     && /\/(?:i|1\.1)\/media\/upload\.json$/.test(url.pathname);
 }
 
+// The upload command is in the query string or a form-encoded body.
+function uploadCommand(url, request) {
+  const command = url.searchParams.get('command');
+  if (command) return command;
+  const form = request.headers()['content-type']?.startsWith('application/x-www-form-urlencoded');
+  return form ? new URLSearchParams(request.postData() || '').get('command') : null;
+}
+
 // X can show a preview while it is still encoding the video. Require its upload
 // response to confirm processing succeeded before allowing the Post button.
 export async function uploadVideo(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},
 } = {}) {
-  let resolve;
-  let reject;
-  const ready = new Promise((yes, no) => { resolve = yes; reject = no; });
+  const ready = Promise.withResolvers();
   // An upload can fail while setInputFiles is still pending.
-  ready.catch(() => {});
-  const timer = setTimeout(() => reject(new Error('video upload/processing timed out')), timeoutMs);
+  ready.promise.catch(() => {});
+  const timer = setTimeout(() => ready.reject(new Error('video upload/processing timed out')), timeoutMs);
   let mediaID;
   const response = async (res) => {
     const url = new URL(res.url());
@@ -73,29 +80,24 @@ export async function uploadVideo(page, dialog, file, {
         throw new Error(`video upload rejected: ${JSON.stringify(body.errors || body.error)}`);
       }
       const id = body.media_id_string;
-      if (id && mediaID && id !== mediaID) return;
-      if (id) mediaID = id;
+      mediaID ||= id;
+      if (id && id !== mediaID) return;
       const info = body.processing_info;
       if (info?.state === 'failed') {
         throw new Error(`video processing failed: ${JSON.stringify(info.error || info)}`);
       }
-      if (info?.state === 'succeeded') resolve();
-      let command = url.searchParams.get('command');
-      const request = res.request();
-      if (!command && request.headers()['content-type']?.startsWith('application/x-www-form-urlencoded')) {
-        command = new URLSearchParams(request.postData() || '').get('command');
-      }
+      if (info?.state === 'succeeded') ready.resolve();
       // FINALIZE without processing_info means synchronous completion.
-      if (command === 'FINALIZE' && id && !info) resolve();
+      if (id && !info && uploadCommand(url, res.request()) === 'FINALIZE') ready.resolve();
     } catch (err) {
-      reject(err);
+      ready.reject(err);
     }
   };
   page.on('response', response);
   try {
     throwIfCancelled();
     await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles(file, { timeout: timeoutMs });
-    await ready;
+    await ready.promise;
     throwIfCancelled();
     await dialog.locator('[data-testid="attachments"] video').first().waitFor({ timeout: 30_000 });
   } finally {

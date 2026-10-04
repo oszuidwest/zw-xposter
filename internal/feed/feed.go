@@ -69,11 +69,13 @@ func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error)
 		}
 		for _, enclosure := range raw.Enclosures {
 			mediaType, _, _ := mime.ParseMediaType(enclosure.Type)
-			if strings.HasPrefix(mediaType, "video/") && strings.TrimSpace(enclosure.URL) != "" {
-				item.VideoURL = strings.TrimSpace(enclosure.URL)
-				if mediaType == "video/mp4" {
-					break
-				}
+			videoURL := strings.TrimSpace(enclosure.URL)
+			if videoURL == "" || !strings.HasPrefix(mediaType, "video/") {
+				continue
+			}
+			item.VideoURL = videoURL
+			if mediaType == "video/mp4" {
+				break
 			}
 		}
 		items = append(items, item)

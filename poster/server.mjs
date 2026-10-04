@@ -56,6 +56,7 @@ const LOGIN_RETRY_MS = 30 * 60_000;
 const MAX_RECENT_HOURS = 336;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
+const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 
 let context;
 let tab;
@@ -217,6 +218,17 @@ async function dismissCookieBanner(page) {
   await humanClick(page, refuse);
   await refuse.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
   log('refused non-essential cookies');
+}
+
+// Acknowledges a one-time feature notice, such as X's downloadable-video sheet,
+// which otherwise covers the composer's Post button.
+async function dismissNotice(page) {
+  const acknowledge = page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE });
+  if (!(await acknowledge.isVisible().catch(() => false))) return;
+  await pause(700, 1800);
+  await humanClick(page, acknowledge);
+  await acknowledge.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
+  log('acknowledged an X notice');
 }
 
 async function isLoggedIn(page) {
@@ -393,6 +405,7 @@ async function createPost({ text, image, videoFile, dryRun }, clientGone) {
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
+    await dismissNotice(page);
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run');
@@ -477,6 +490,14 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// A destroyed response means the client has disconnected.
+async function postAndSend(res, post) {
+  log(post.videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+  const result = await exclusive(() => createPost(post, () => res.destroyed));
+  log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
+  send(res, 200, result);
+}
+
 async function readJSON(req) {
   const chunks = [];
   let size = 0;
@@ -514,11 +535,8 @@ export const server = http.createServer(async (req, res) => {
       if (payload.image && (!payload.image.mime || !payload.image.data)) {
         return send(res, 400, { error: 'image needs mime and data' });
       }
-      log('posting:', payload.text.split('\n')[0].slice(0, 100));
-      // A destroyed response means the client has disconnected.
-      const result = await exclusive(() => createPost(payload, () => res.destroyed));
-      log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
-      return send(res, 200, result);
+      // Copy known fields so JSON can never select a local videoFile.
+      return await postAndSend(res, { text: payload.text, image: payload.image, dryRun: payload.dryRun });
     }
     if (req.method === 'POST' && url.pathname === '/post-video') {
       let text;
@@ -527,14 +545,11 @@ export const server = http.createServer(async (req, res) => {
         if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
         text = videoPostText(req.headers['x-post-text']);
       } catch (err) {
-        return send(res, 400, { error: err.message, clicked: false });
+        return send(res, 400, postErrorResponse(err));
       }
       const video = await receiveVideo(req);
       try {
-        log('posting video:', text.split('\n')[0].slice(0, 100));
-        const result = await exclusive(() => createPost({ text, videoFile: video.file }, () => res.destroyed));
-        log('posted video', result.url);
-        return send(res, 200, result);
+        return await postAndSend(res, { text, videoFile: video.file });
       } finally {
         await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
       }
