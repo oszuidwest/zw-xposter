@@ -1,6 +1,5 @@
 import js from '@eslint/js';
 
-// ESLint's defaults already cover node_modules, .mjs files and ES modules.
 export default [
   js.configs.recommended,
   {

@@ -18,7 +18,7 @@ Seed once to skip existing articles. Run one instance and keep the `xposter-data
 
 Defaults: poll every two minutes, skip articles older than 24 hours. Optional settings, e-mail alerts and heartbeat monitoring are in `.env.example`.
 
-Videos must be advertised in the RSS feed as enclosures: MP4, up to 512 MiB, 0.5 seconds–20 minutes. Add CDN and redirect hosts to `ALLOWED_HOSTS`. Failed videos never fall back to images. Large videos need about 1 GiB of temporary memory plus browser overhead; Compose provides the temporary storage.
+Videos must be advertised in the RSS feed as enclosures: MP4, up to 512 MiB, 0.5 seconds–20 minutes. Add CDN and redirect hosts to `ALLOWED_HOSTS`. Failed videos never fall back to images. Large videos need about 1 GiB of temporary storage plus browser overhead; Compose provides the temporary storage.
 
 ## Operations
 

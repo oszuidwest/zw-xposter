@@ -20,7 +20,7 @@ cleanup() {
         wait "$watchdog" 2>/dev/null || true
     fi
 }
-trap 'cleanup' EXIT
+trap cleanup EXIT
 trap 'exit 0' TERM INT
 
 # Hold the profile lock for the entire container lifetime, including shutdown.

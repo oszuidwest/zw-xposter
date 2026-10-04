@@ -31,7 +31,7 @@ func (v *Video) Close() error {
 }
 
 // FetchVideo downloads a bounded MP4 through the same URL and redirect policy as images.
-// A video X cannot accept returns an error wrapping ErrUnsupportedVideo.
+// Videos that X cannot accept return an error wrapping ErrUnsupportedVideo.
 func FetchVideo(ctx context.Context, client *http.Client, videoURL string) (*Video, error) {
 	return fetchVideo(ctx, client, videoURL, maxVideoSize)
 }
