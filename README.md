@@ -39,7 +39,7 @@ docker compose start xposter
 
 Replay queues a duplicate-checked retry and requires the article to still be in the feed, with an X lookback of at most 14 days. Do not delete or reseed lost or corrupt state without checking existing posts on X.
 
-For a diagnostic poll, stop the service, run `docker compose run --rm -e DRY_RUN=true xposter serve -once`, then start it again. This reads X without posting or writing state. Browser failure screenshots are kept for 14 days in `/data/debug`.
+For a diagnostic poll, stop the service, run `docker compose run --rm -e DRY_RUN=true xposter serve -once`, then start it again. This reads X without posting or writing state; a failed poll exits nonzero. Browser failure screenshots are kept for 14 days in `/data/debug`.
 
 ## Development
 

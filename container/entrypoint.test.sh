@@ -1,5 +1,5 @@
 #!/bin/bash
-# Run only in a disposable container: replace the applications with startup probes.
+# Disposable containers only: overwrites the applications with startup probes.
 set -euo pipefail
 export HEADLESS=true
 mkdir -p /tmp/bin
@@ -23,7 +23,7 @@ chmod +x /tmp/bin/node /app/orchestrator
 run() {
     local expected=$1 status=0
     shift
-    # Fresh state per run: the shutdown watchdog's sleep can still hold the profile lock.
+    # Fresh state isolates profile locks inherited by the shutdown watchdog's sleep.
     DATA_DIR=$(mktemp -d) timeout 120 /app/entrypoint.sh "$@" >/tmp/startup.log 2>&1 || status=$?
     if [[ $status != "$expected" ]]; then
         cat /tmp/startup.log
