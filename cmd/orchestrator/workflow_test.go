@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"html"
+	"io"
 	"net/http"
 	"os"
 	"strings"
@@ -15,6 +16,69 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/state"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
+
+func TestPollVideoTakesPriority(t *testing.T) {
+	for _, tt := range []struct {
+		name         string
+		dryRun       bool
+		failDownload bool
+		postError    string
+		wantStatus   string
+		wantPosts    int32
+	}{
+		{name: "video replaces image", wantStatus: state.StatusPosted, wantPosts: 1},
+		{name: "dry run never posts", dryRun: true, wantStatus: state.StatusPosted},
+		{name: "download failure retries without image", failDownload: true, wantStatus: state.StatusRetry},
+		{name: "upload failure retries", postError: `{"error":"encoding failed","clicked":false}`, wantStatus: state.StatusRetry, wantPosts: 1},
+		{name: "post-click failure reconciles", postError: `{"error":"confirmation missing","clicked":true}`, wantStatus: state.StatusUncertain, wantPosts: 1},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			var contentCalls int
+			fixture := newPollTest(t, &pollTestOptions{
+				content: func(w http.ResponseWriter, r *http.Request) {
+					contentCalls++
+					if r.URL.Path != "/video.mp4" {
+						t.Errorf("video article fetched image/page: %s", r.URL.Path)
+					}
+					if tt.failDownload {
+						http.Error(w, "unavailable", http.StatusServiceUnavailable)
+						return
+					}
+					w.Header().Set("Content-Type", "video/mp4")
+					_, _ = io.WriteString(w, "synthetic MP4")
+				},
+				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
+					testutil.Equal(t, r.URL.Path, "/post-video")
+					testutil.Equal(t, r.Header.Get("Content-Type"), "video/mp4")
+					text, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Post-Text"))
+					testutil.NoError(t, err)
+					testutil.Equal(t, string(text), postText(&item))
+					body, err := io.ReadAll(r.Body)
+					testutil.NoError(t, err)
+					testutil.Equal(t, string(body), "synthetic MP4")
+					if tt.postError != "" {
+						w.WriteHeader(http.StatusInternalServerError)
+						_, _ = io.WriteString(w, tt.postError)
+						return
+					}
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/video"})
+				},
+			})
+			fixture.items[0].VideoURL = strings.TrimSuffix(fixture.item.Link, "/article") + "/video.mp4"
+			fixture.app.cfg.DryRun = tt.dryRun
+			entry := fixture.poll()
+			testutil.Equal(t, entry.Status, tt.wantStatus)
+			fixture.assertCalls(1, tt.wantPosts)
+			testutil.Equal(t, contentCalls, 1)
+			if tt.wantStatus == state.StatusRetry || tt.wantStatus == state.StatusUncertain {
+				testutil.Equal(t, entry.Attempts, 1)
+				if entry.LastError == "" || !entry.NextAttemptAt.After(testNow) {
+					t.Fatalf("failure was not scheduled for retry: %#v", entry)
+				}
+			}
+		})
+	}
+}
 
 func TestPollRecoversPersistedPosting(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusPosting, Attempts: 1}})

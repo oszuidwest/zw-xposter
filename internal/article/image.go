@@ -1,4 +1,4 @@
-// Package article retrieves the share image of an article.
+// Package article retrieves article images and videos.
 package article
 
 import (

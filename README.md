@@ -1,6 +1,6 @@
 # zw-xposter
 
-Posts new [ZuidWest Update](https://www.zuidwestupdate.nl/) articles to [@zwupdate](https://x.com/zwupdate) with a link and image. Go polls RSS; Playwright posts through X. Both run in one Docker container.
+Posts new [ZuidWest Update](https://www.zuidwestupdate.nl/) articles to [@zwupdate](https://x.com/zwupdate) with a link and their featured video, or an image for articles without video. Go polls RSS; Playwright posts through X. Both run in one Docker container.
 
 ## Setup
 
@@ -17,6 +17,10 @@ docker compose up -d
 Seed once to skip existing articles. Keep the `xposter-data` volume: it holds posting history and the browser session. Run one instance; stop it before one-off commands that use this volume. If state is lost or corrupt, check existing posts on X before reseeding.
 
 Defaults: poll every two minutes, skip articles older than 24 hours. See [.env.example](.env.example) for settings, e-mail alerts and heartbeat monitoring.
+
+Videos are read from RSS `<enclosure type="video/mp4">` entries. Featured article videos require [streekomroep-wp #253](https://github.com/oszuidwest/streekomroep-wp/pull/253), which reuses the linked fragment's cached MP4 enclosure; videos still being encoded or not yet cached are not advertised by the feed. Add the MP4 CDN hostname (and any redirect hosts) to `ALLOWED_HOSTS`.
+
+MP4 files up to 512 MiB are streamed through temporary files; allow roughly 1 GiB of free temporary disk space for a maximum-size video. Downloads have five minutes and X upload/processing has ten minutes. X's account-specific duration and format limits still apply. A video download or upload failure retries the article instead of publishing its image. Only articles without a video enclosure use the existing image/text fallback.
 
 ## Operations
 
@@ -44,6 +48,8 @@ cd poster
 npm ci
 npm test
 npm run lint
+# Offline HTTP-to-browser integration checks (requires Playwright Chromium):
+node --test browser.integration.mjs
 ```
 
 Container checks (from the repo root): `docker build -t zw-xposter:test . && bash container/test.sh zw-xposter:test`.

@@ -59,3 +59,34 @@ func TestFetch(t *testing.T) {
 		})
 	}
 }
+
+func TestFetchVideoEnclosures(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, media, want string
+	}{
+		{name: "no media"},
+		{name: "image", media: `<enclosure type="image/jpeg" url="https://cdn.example/image.jpg"/>`},
+		{name: "audio", media: `<enclosure type="audio/mpeg" url="https://cdn.example/audio.mp3"/>`},
+		{name: "video", media: `<enclosure type="video/mp4" length="123" url=" https://cdn.example/video.mp4?a=1&amp;b=2 "/>`, want: "https://cdn.example/video.mp4?a=1&b=2"},
+		{name: "MP4 preferred", media: `<enclosure type="video/quicktime" url="https://cdn.example/video.mov"/><enclosure type="video/mp4" url="https://cdn.example/video.mp4"/>`, want: "https://cdn.example/video.mp4"},
+		{name: "unsupported video still takes priority over image", media: `<enclosure type="video/quicktime" url="https://cdn.example/video.mov"/>`, want: "https://cdn.example/video.mov"},
+		{name: "empty URL", media: `<enclosure type="video/mp4" url=" "/>`},
+		{name: "content is not an enclosure", media: `<content:encoded xmlns:content="http://purl.org/rss/1.0/modules/content/"><![CDATA[<video src="other.mp4">]]></content:encoded>`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			server := testutil.Server(t, func(w http.ResponseWriter, _ *http.Request) {
+				_, _ = w.Write([]byte(strings.ReplaceAll(sample, "</item>", tt.media+"</item>")))
+			})
+			items, err := Fetch(t.Context(), server.Client(), server.URL)
+			testutil.NoError(t, err)
+			if len(items) != 2 {
+				t.Fatalf("items = %d, want 2", len(items))
+			}
+			for _, item := range items {
+				testutil.Equal(t, item.VideoURL, tt.want)
+			}
+		})
+	}
+}

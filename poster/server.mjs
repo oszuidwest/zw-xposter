@@ -5,6 +5,7 @@
 //   GET /ready -> 200 after a recent successful session check
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
+//   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -14,6 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
+import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
 import {
   sessionCheckDelay,
   sessionHealth,
@@ -350,7 +352,7 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-async function createPost({ text, image, dryRun }, clientGone) {
+async function createPost({ text, image, videoFile, dryRun }, clientGone) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');
   };
@@ -375,7 +377,9 @@ async function createPost({ text, image, dryRun }, clientGone) {
     await humanClick(page, box);
     await humanType(page, text);
 
-    if (image) {
+    if (videoFile) {
+      await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
+    } else if (image) {
       await pause(800, 2000);
       await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
         name: image.name || 'image',
@@ -503,6 +507,7 @@ export const server = http.createServer(async (req, res) => {
     }
     if (req.method === 'POST' && url.pathname === '/post') {
       const payload = await readJSON(req);
+      if (payload.videoFile) return send(res, 400, { error: 'use /post-video to upload a video' });
       if (typeof payload.text !== 'string' || !payload.text.trim()) {
         return send(res, 400, { error: 'text is required' });
       }
@@ -514,6 +519,25 @@ export const server = http.createServer(async (req, res) => {
       const result = await exclusive(() => createPost(payload, () => res.destroyed));
       log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
       return send(res, 200, result);
+    }
+    if (req.method === 'POST' && url.pathname === '/post-video') {
+      let text;
+      try {
+        if (req.headers['content-type'] !== 'video/mp4') throw new Error('video/mp4 is required');
+        if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
+        text = videoPostText(req.headers['x-post-text']);
+      } catch (err) {
+        return send(res, 400, { error: err.message, clicked: false });
+      }
+      const video = await receiveVideo(req);
+      try {
+        log('posting video:', text.split('\n')[0].slice(0, 100));
+        const result = await exclusive(() => createPost({ text, videoFile: video.file }, () => res.destroyed));
+        log('posted video', result.url);
+        return send(res, 200, result);
+      } finally {
+        await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
+      }
     }
     send(res, 404, { error: 'not found' });
   } catch (err) {

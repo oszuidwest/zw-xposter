@@ -7,6 +7,7 @@ export default [
     languageOptions: {
       globals: {
         AbortController: 'readonly',
+        AbortSignal: 'readonly',
         Buffer: 'readonly',
         console: 'readonly',
         document: 'readonly',
