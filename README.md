@@ -45,6 +45,6 @@ go test ./...
 
 Full container and browser checks: `docker build -t zw-xposter:test . && bash container/test.sh zw-xposter:test`.
 
-Push a `vX.Y.Z` tag to run security checks and publish the image. Stable releases update `latest`.
+Push a `vX.Y.Z` tag to run security checks, publish the image and create the GitHub release with generated notes. Stable releases update `latest`; a release created by hand beforehand is kept.
 
 Licensed under [MIT](LICENSE).
