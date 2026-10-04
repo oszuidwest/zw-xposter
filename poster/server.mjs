@@ -16,7 +16,7 @@ import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
 import { MAX_VIDEO_BYTES, receiveVideo, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
-import { generateSubtitles, SUBTITLE_TIMEOUT_MS } from './subtitles.mjs';
+import { generateSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
   sessionHealth,
@@ -220,6 +220,13 @@ async function dismissOverlay(page, button, message) {
   log(message);
 }
 
+// X's one-time video notice can cover the caption and Post buttons.
+function acknowledgeNotice(page) {
+  return dismissOverlay(page,
+    page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
+    'acknowledged an X notice');
+}
+
 async function isLoggedIn(page) {
   await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
   const nav = page.locator('[data-testid="SideNav_AccountSwitcher_Button"]');
@@ -353,8 +360,8 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-// videoFile is a local path, so it is never part of the request payload.
-async function createPost({ text, image, dryRun }, clientGone, videoFile, subtitleFile) {
+// video holds local paths, so it is never part of the request payload.
+async function createPost({ text, image, dryRun }, clientGone, video) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');
   };
@@ -379,12 +386,10 @@ async function createPost({ text, image, dryRun }, clientGone, videoFile, subtit
     await humanClick(page, box);
     await humanType(page, text);
 
-    if (videoFile) {
-      await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
-      await dismissOverlay(page,
-        page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
-        'acknowledged an X notice');
-      await uploadSubtitles(page, dialog, subtitleFile, { throwIfCancelled: throwIfGone });
+    if (video) {
+      await uploadVideo(page, dialog, video.file, { throwIfCancelled: throwIfGone });
+      await acknowledgeNotice(page);
+      await uploadSubtitles(page, dialog, video.subtitles, { throwIfCancelled: throwIfGone });
     } else if (image) {
       await pause(800, 2000);
       await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
@@ -399,10 +404,7 @@ async function createPost({ text, image, dryRun }, clientGone, videoFile, subtit
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
-    // X's one-time video notice can cover the composer's Post button.
-    await dismissOverlay(page,
-      page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
-      'acknowledged an X notice');
+    await acknowledgeNotice(page);
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run');
@@ -487,26 +489,30 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
+// Abort transcription when the client disconnects.
+async function transcribe(res, videoFile) {
+  const disconnected = new AbortController();
+  const abort = () => disconnected.abort();
+  res.on('close', abort);
+  try {
+    if (res.destroyed) throw new Error('client disconnected before transcription');
+    log('generating Dutch subtitles');
+    return await generateSubtitles(videoFile, { signal: disconnected.signal });
+  } finally {
+    res.off('close', abort);
+  }
+}
+
 // A destroyed response means the client has disconnected.
 async function postAndSend(res, post, videoFile) {
   log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+  // Transcribe inside the queue so posts keep their request order.
   const result = await exclusive(async () => {
-    let subtitleFile;
+    let video;
     if (videoFile) {
-      const disconnected = new AbortController();
-      const abort = () => disconnected.abort();
-      res.on('close', abort);
-      try {
-        if (res.destroyed) throw new Error('client disconnected before transcription');
-        log('generating Dutch subtitles');
-        subtitleFile = await generateSubtitles(videoFile, {
-          signal: AbortSignal.any([disconnected.signal, AbortSignal.timeout(SUBTITLE_TIMEOUT_MS)]),
-        });
-      } finally {
-        res.off('close', abort);
-      }
+      video = { file: videoFile, subtitles: await transcribe(res, videoFile) };
     }
-    return createPost(post, () => res.destroyed, videoFile, subtitleFile);
+    return createPost(post, () => res.destroyed, video);
   });
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);

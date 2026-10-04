@@ -12,6 +12,10 @@ import xUI from './x-ui.json' with { type: 'json' };
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 const VIDEO_RECEIVE_TIMEOUT_MS = 5 * 60_000;
 const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
+const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
+const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
+const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -103,15 +107,15 @@ export async function uploadVideo(page, dialog, file, {
 export async function uploadSubtitles(page, dialog, file, { throwIfCancelled = () => {} } = {}) {
   if (!file) throw new Error('video subtitles are required');
   throwIfCancelled();
-  await dialog.getByRole('button', { name: new RegExp(xUI.captionUploadPattern, 'i') }).click();
+  await dialog.getByRole('button', { name: CAPTION_UPLOAD }).click();
   const captions = page.locator('[role="dialog"][aria-modal="true"]').filter({
-    has: page.getByRole('button', { name: new RegExp(xUI.captionDonePattern, 'i') }),
+    has: page.getByRole('button', { name: CAPTION_DONE }),
   });
   await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles(file);
-  await captions.getByRole('button', { name: new RegExp(xUI.captionRemovePattern, 'i') }).waitFor({ timeout: 60_000 });
+  await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
   throwIfCancelled();
-  await captions.getByRole('button', { name: new RegExp(xUI.captionDonePattern, 'i') }).click();
+  await captions.getByRole('button', { name: CAPTION_DONE }).click();
   // X replaces the upload action with the language or its generic captions label.
-  await dialog.getByText(new RegExp(xUI.captionAttachedPattern, 'i')).waitFor({ timeout: 60_000 });
+  await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: 60_000 });
   throwIfCancelled();
 }
