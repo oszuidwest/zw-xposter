@@ -15,10 +15,15 @@ RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -trimpath \
 
 FROM node:26-bookworm-slim AS poster-build
 ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+# Keep binutils and native debug symbols out of the runtime image.
+RUN apt-get update && \
+    apt-get install -y --no-install-recommends binutils && \
+    strip --strip-unneeded /usr/local/bin/node && \
+    rm -rf /var/lib/apt/lists/*
 WORKDIR /build
 COPY poster/package.json poster/package-lock.json ./
 RUN npm ci --omit=dev && \
-    node node_modules/playwright/cli.js install --no-shell chromium
+    node node_modules/playwright-core/cli.js install --no-shell chromium
 
 FROM ubuntu:26.04
 LABEL org.opencontainers.image.source="https://github.com/oszuidwest/zw-xposter"
@@ -35,7 +40,7 @@ RUN --mount=type=bind,from=poster-build,source=/build/node_modules,target=/build
     apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 tini util-linux tzdata xvfb \
         fonts-dejavu-core fonts-ubuntu fonts-croscore libgl1-mesa-dri libegl1 libgl1 && \
-    node /build/node_modules/playwright/cli.js install-deps chromium && \
+    node /build/node_modules/playwright-core/cli.js install-deps chromium && \
     rm -rf /var/lib/apt/lists/* && \
     install -d -o 1000 -g 1000 -m 0700 /data && \
     install -d -m 1777 /tmp/.X11-unix
