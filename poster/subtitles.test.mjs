@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
@@ -33,7 +33,7 @@ async function fixture(t, handler) {
   return { directory, file };
 }
 
-test('streams the MP4 and saves UTF-8 SRT alongside it for the existing cleanup', async (t) => {
+test('streams the MP4 and returns UTF-8 SRT without writing files', async (t) => {
   const f = await fixture(t, async (req, res) => {
     assert.equal(req.url, '/transcribe');
     assert.equal(req.headers['xi-api-key'], 'test-key');
@@ -49,16 +49,14 @@ test('streams the MP4 and saves UTF-8 SRT alongside it for the existing cleanup'
     assert.equal(await form.get('file').text(), 'MP4 fixture');
     res.end(transcript());
   });
-  const file = await generateSubtitles(f.file, { apiKey: 'test-key' });
-  assert.equal(file, path.join(f.directory, 'video.nl.srt'));
-  assert.equal(await readFile(file, 'utf8'), srt);
+  assert.equal(await generateSubtitles(f.file, { apiKey: 'test-key' }), srt);
+  assert.deepEqual(await readdir(f.directory), ['video.mp4']);
 });
 
 test('accepts base64 SRT and rejects missing credentials before opening the file', async (t) => {
   await assert.rejects(generateSubtitles('/nonexistent', { apiKey: '' }), /ELEVENLABS_API_KEY/);
   const f = await fixture(t, (req, res) => res.end(transcript(Buffer.from(srt).toString('base64'), true)));
-  const file = await generateSubtitles(f.file, { apiKey: 'test-key' });
-  assert.equal(await readFile(file, 'utf8'), srt);
+  assert.equal(await generateSubtitles(f.file, { apiKey: 'test-key' }), srt);
 });
 
 test('rejects failures, empty/malformed/oversized output, truncation and cancellation', async (t) => {
@@ -70,6 +68,7 @@ test('rejects failures, empty/malformed/oversized output, truncation and cancell
     empty: (req, res) => res.end(transcript('')),
     missing: (req, res) => res.end('{}'),
     timing: (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:00:01,000'))),
+    tooLong: (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:20:00,001'))),
     overlap: (req, res) => res.end(transcript(srt + srt.replace('1\n', '2\n'))),
     incomplete: (req, res) => res.end(transcript(srt + '2\n00:00:04,000 --> 00:00:05,000\n')),
     html: (req, res) => res.end('<html>Error</html>'),

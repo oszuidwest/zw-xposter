@@ -360,7 +360,7 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-// video holds local paths, so it is never part of the request payload.
+// video holds a local path and generated captions, so it is never part of the request payload.
 async function createPost({ text, image, dryRun }, clientGone, video) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');
@@ -489,30 +489,26 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-// Abort transcription when the client disconnects.
-async function transcribe(res, videoFile) {
-  const disconnected = new AbortController();
-  const abort = () => disconnected.abort();
-  res.on('close', abort);
-  try {
-    if (res.destroyed) throw new Error('client disconnected before transcription');
-    log('generating Dutch subtitles');
-    return await generateSubtitles(videoFile, { signal: disconnected.signal });
-  } finally {
-    res.off('close', abort);
-  }
+// Aborts when the client disconnects, including while the request waits in the queue.
+function disconnectSignal(res) {
+  const controller = new AbortController();
+  if (res.destroyed) controller.abort();
+  else res.once('close', () => controller.abort());
+  return controller.signal;
 }
 
-// A destroyed response means the client has disconnected.
 async function postAndSend(res, post, videoFile) {
   log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+  const disconnected = disconnectSignal(res);
   // Transcribe inside the queue so posts keep their request order.
   const result = await exclusive(async () => {
     let video;
     if (videoFile) {
-      video = { file: videoFile, subtitles: await transcribe(res, videoFile) };
+      if (disconnected.aborted) throw new Error('client disconnected before transcription');
+      log('generating Dutch subtitles');
+      video = { file: videoFile, subtitles: await generateSubtitles(videoFile, { signal: disconnected }) };
     }
-    return createPost(post, () => res.destroyed, video);
+    return createPost(post, () => disconnected.aborted, video);
   });
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);

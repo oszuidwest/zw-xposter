@@ -1,13 +1,11 @@
 import { openAsBlob } from 'node:fs';
-import { writeFile } from 'node:fs/promises';
-import path from 'node:path';
 import { TextDecoder } from 'node:util';
 
 const SUBTITLE_TIMEOUT_MS = 10 * 60_000;
 const MAX_RESPONSE_BYTES = 4 * 1024 * 1024;
 // Must match maxVideoDuration in internal/article/mp4.go.
 const MAX_VIDEO_MS = 20 * 60_000;
-const SRT_CUE = /^(\d+)\n(\d{2}:[0-5]\d:[0-5]\d,\d{3}) --> (\d{2}:[0-5]\d:[0-5]\d,\d{3})\n(\S[^]*)$/;
+const SRT_CUE = /^(\d+)\n(\d{2}:[0-5]\d:[0-5]\d,\d{3}) --> (\d{2}:[0-5]\d:[0-5]\d,\d{3})\n\S[^]*$/;
 const utf8 = new TextDecoder('utf-8', { fatal: true });
 
 // SRT timestamp (HH:MM:SS,mmm) in milliseconds.
@@ -68,7 +66,5 @@ export async function generateSubtitles(videoFile, {
     if (start < previousEnd || end <= start || end > MAX_VIDEO_MS) throw new Error('ElevenLabs returned invalid SRT timing');
     previousEnd = end;
   }
-  const file = path.join(path.dirname(videoFile), 'video.nl.srt');
-  await writeFile(file, srt, { mode: 0o600, flag: 'wx' });
-  return file;
+  return srt;
 }

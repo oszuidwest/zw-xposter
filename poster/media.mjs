@@ -104,14 +104,16 @@ export async function uploadVideo(page, dialog, file, {
   }
 }
 
-export async function uploadSubtitles(page, dialog, file, { throwIfCancelled = () => {} } = {}) {
-  if (!file) throw new Error('video subtitles are required');
+export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = () => {} } = {}) {
+  if (!srt) throw new Error('video subtitles are required');
   throwIfCancelled();
   await dialog.getByRole('button', { name: CAPTION_UPLOAD }).click();
   const captions = page.locator('[role="dialog"][aria-modal="true"]').filter({
     has: page.getByRole('button', { name: CAPTION_DONE }),
   });
-  await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles(file);
+  await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles({
+    name: 'video.nl.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt),
+  });
   await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
   throwIfCancelled();
   await captions.getByRole('button', { name: CAPTION_DONE }).click();

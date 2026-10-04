@@ -20,9 +20,9 @@ Defaults: poll every two minutes, skip articles older than 24 hours. Optional se
 
 Videos must be advertised in the RSS feed as enclosures: MP4, up to 512 MiB, 0.5 seconds–20 minutes. Add CDN and redirect hosts to `ALLOWED_HOSTS`. Failed videos never fall back to images. Large videos need about 1 GiB of temporary storage plus browser overhead; Compose provides the temporary storage.
 
-Set `ELEVENLABS_API_KEY` with the **Speech to Text** permission for video posts. Each video is sent to [ElevenLabs Scribe v2](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) with Dutch (`nld`) fixed as the language. The API generates an SRT file, which the browser attaches as Dutch captions before publishing. Transcription incurs ElevenLabs usage charges. No local model, extra container or GPU is needed.
+Set `ELEVENLABS_API_KEY` with the **Speech to Text** permission for video posts. Each video is sent to [ElevenLabs Scribe v2](https://elevenlabs.io/docs/api-reference/speech-to-text/convert) with Dutch (`nld`) fixed as the language. The API generates an SRT file, which the browser attaches as Dutch captions before publishing. Transcription incurs ElevenLabs usage charges.
 
-Missing credentials, failed transcription, empty/invalid captions or failed caption attachment prevent publication and use the existing retry flow. Temporary video and subtitle files are removed after each attempt. Transcription has a 10-minute limit; the complete video request allows 30 minutes. Long videos can therefore delay subsequent feed checks and heartbeat updates. Image posts do not require ElevenLabs.
+Missing credentials, failed transcription, empty/invalid captions or failed caption attachment prevent publication and use the normal retry flow. Temporary video files are removed after each attempt. Transcription has a 10-minute limit; the complete video request allows 30 minutes. Long videos can therefore delay subsequent feed checks and heartbeat updates. Image posts do not require ElevenLabs.
 
 ## Operations
 
