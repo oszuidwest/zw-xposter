@@ -90,8 +90,8 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader) (s
 	req.Header.Set("Content-Type", "video/mp4")
 	req.Header.Set("X-Post-Text", base64.StdEncoding.EncodeToString([]byte(text)))
 	client := *c.http
-	// Allow upload/processing (10 minutes) plus login, typing and confirmation.
-	client.Timeout = 15 * time.Minute
+	// Allow receipt (5 minutes), upload/processing (10), and browser confirmation.
+	client.Timeout = 20 * time.Minute
 	return c.sendPost(req, &client)
 }
 
