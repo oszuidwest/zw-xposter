@@ -30,8 +30,8 @@ type message struct {
 	body    string
 }
 
-// Service sends on transitions and reminds while a condition stays active. A
-// nil Service is disabled and discards every event.
+// Service queues alerts and rate-limits reminders per condition.
+// A nil Service discards events; callers must recheck active conditions.
 type Service struct {
 	mu         sync.Mutex
 	reminder   time.Duration
@@ -110,7 +110,7 @@ func (s *Service) Resolve(event Event) {
 	}
 }
 
-// Close drains queued mail before returning.
+// Close waits for queued delivery attempts; failures are logged.
 func (s *Service) Close() {
 	if !s.IsConfigured() {
 		return

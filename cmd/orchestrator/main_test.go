@@ -909,6 +909,39 @@ func TestRunDryRunDoesNotWriteState(t *testing.T) {
 	}
 }
 
+func TestRunOnceReturnsPollError(t *testing.T) {
+	for _, tt := range []struct {
+		name    string
+		feed    string
+		recent  bool
+		wantErr string
+	}{
+		{name: "success", recent: true},
+		{name: "feed failure", feed: "/unavailable", wantErr: "fetch feed"},
+		{name: "incomplete timeline", wantErr: "incomplete"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{
+				published: time.Now().Add(-time.Hour),
+				content: func(w http.ResponseWriter, _ *http.Request) {
+					http.Error(w, "unavailable", http.StatusServiceUnavailable)
+				},
+				recent: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": tt.recent})
+				},
+			})
+			testutil.NoError(t, fixture.app.store.Save())
+			t.Setenv("DRY_RUN", "true")
+			t.Setenv("STATE_FILE", fixture.app.cfg.StateFile)
+			t.Setenv("FEED_URL", fixture.app.cfg.FeedURL+tt.feed)
+			t.Setenv("POSTER_URL", fixture.app.cfg.PosterURL)
+
+			testutil.ErrorContains(t, run(options{once: true}, fixture.app.http), tt.wantErr)
+			testutil.Equal(t, fixture.postCalls.Load(), 0)
+		})
+	}
+}
+
 func TestRetryDelay(t *testing.T) {
 	tests := []struct {
 		attempts int

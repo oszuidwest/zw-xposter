@@ -1,7 +1,7 @@
 // Posts to X through persistent, logged-in Chromium.
 //
 // API:
-//   GET /health -> 200 while the process is up
+//   GET /health -> 200 once Chromium has launched and HTTP is listening
 //   GET /ready -> 200 after a recent successful session check
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
@@ -146,7 +146,7 @@ async function screenshot(page, name) {
   return file;
 }
 
-// Mouse position is kept per page; Playwright starts it at 0,0.
+// Retain each page's last click target for the next mouse path.
 const mouse = new WeakMap();
 
 // Click a random interior point after a curved mouse move.
@@ -387,7 +387,7 @@ async function createPost({ text, image, dryRun }, clientGone) {
 
     const button = dialog.locator('[data-testid="tweetButton"]');
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-    // Pause before the final click.
+    // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
 
     if (dryRun) {
@@ -449,7 +449,7 @@ async function recentPosts(hours) {
     await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
     await page.locator('article').first().waitFor();
     await pause(1500, 3000);
-    // Scroll back far enough to cover the requested window.
+    // Bound scrolling; reject the request if the window remains incomplete.
     for (let i = 0; i < 8; i++) {
       await Promise.all(pending);
       // A failed page can never be completed, so further scrolling is wasted.

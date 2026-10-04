@@ -36,7 +36,7 @@ type Entry struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// Store is a JSON file of entries keyed by feed GUID.
+// Store holds entries keyed by feed GUID; Save persists them as JSON.
 type Store struct {
 	path   string
 	exists bool
@@ -95,7 +95,7 @@ func (s *Store) SetAt(guid string, e *Entry, now time.Time) {
 	s.Items[guid] = *e
 }
 
-// Save atomically writes the store to disk.
+// Save atomically replaces the state file via rename; callers must serialize writes.
 func (s *Store) Save() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {

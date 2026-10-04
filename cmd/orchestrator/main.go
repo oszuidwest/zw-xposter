@@ -107,8 +107,7 @@ func run(opts options, contentHTTP *http.Client) error {
 		return err
 	}
 	defer func() { _ = lock.Close() }()
-	// The duplicate check must cover MAX_AGE plus the margin.
-	// Subtract the margin to avoid overflowing on a huge MAX_AGE.
+	// Subtract the margin to avoid overflow while requiring full duplicate-check coverage.
 	if cfg.MaxAge > poster.MaxLookback-recentMargin {
 		return fmt.Errorf("MAX_AGE must be at most %s, because the poster reads at most %s of X history, got %s",
 			poster.MaxLookback-recentMargin, poster.MaxLookback, cfg.MaxAge)
@@ -153,8 +152,7 @@ func run(opts options, contentHTTP *http.Client) error {
 	defer a.alerts.Close()
 
 	if opts.once {
-		a.pollAndReport(ctx)
-		return nil
+		return a.pollAndReport(ctx)
 	}
 	return a.serve(ctx, stop)
 }
@@ -184,7 +182,7 @@ func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 		Handler:           a.status.Handler(),
 		ReadHeaderTimeout: 5 * time.Second,
 	}
-	// Buffer the shutdown error: after deferred Shutdown, no receiver remains.
+	// Buffer Serve's result so shutdown cannot strand its goroutine.
 	serverErr := make(chan error, 1)
 	go func() { serverErr <- statusServer.Serve(listener) }()
 	a.startedAt = a.now()
@@ -203,7 +201,9 @@ func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 	ticker := time.NewTicker(a.cfg.PollInterval)
 	defer ticker.Stop()
 	for {
-		a.pollAndReport(ctx)
+		if err := a.pollAndReport(ctx); err != nil && ctx.Err() == nil {
+			slog.Error("poll failed", "error", err)
+		}
 		select {
 		case <-ctx.Done():
 			slog.Info("shutting down")
@@ -215,16 +215,14 @@ func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 	}
 }
 
-// pollAndReport updates health and pings the heartbeat only after a successful poll.
-func (a *app) pollAndReport(ctx context.Context) {
+// pollAndReport updates health and sends a heartbeat only if the poll succeeds.
+func (a *app) pollAndReport(ctx context.Context) error {
 	if err := a.poll(ctx); err != nil {
-		if ctx.Err() == nil {
-			slog.Error("poll failed", "error", err)
-		}
-		return
+		return err
 	}
 	a.status.RecordPoll(a.now())
 	a.pingHeartbeat(ctx)
+	return nil
 }
 
 // loadStore requires existing state for polling and missing state for seeding.
@@ -300,7 +298,7 @@ func (a *app) replay(ctx context.Context, guid string) error {
 }
 
 // recoverPosting marks unfinished attempts uncertain for reconciliation against X.
-// Every poll checks: a crash or failed outcome save can leave an entry posting.
+// Check each poll: crashes and failed outcome saves can leave posting entries.
 func (a *app) recoverPosting() bool {
 	changed := false
 	now := a.now()
@@ -371,13 +369,13 @@ func (a *app) processItem(ctx context.Context, item feed.Item, workflow *pollSta
 		return nil
 	}
 	entry := a.store.Items[item.GUID]
-	// The feed is the source of truth for the metadata of listed items.
+	// Refresh metadata from the current feed, including replayed items.
 	entry.Title, entry.Link, entry.PublishedAt = item.Title, item.Link, item.Published
 	if a.expired(&entry, workflow.now) {
 		return a.recordExpired(item.GUID, &entry)
 	}
 	if age := workflow.now.Sub(item.Published); age > workflow.lookback {
-		// Only a replay of an article older than the poster can check gets here.
+		// A replay can outlive the poster's history window.
 		entry.Status = state.StatusFailedTerminal
 		entry.LastError = fmt.Sprintf("article is %d hours old, beyond the %d hours of X history the poster can check; check X manually",
 			poster.LookbackHours(age), poster.MaxLookbackHours)
@@ -561,7 +559,7 @@ func (a *app) record(guid string, entry *state.Entry) error {
 	return nil
 }
 
-// workflowAlert emits a notification only on transition to missed or failed_terminal.
+// workflowAlert builds an alert only on transition to missed or failed_terminal.
 func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, bool) {
 	if previous.Status == entry.Status {
 		return notify.Event{}, false
