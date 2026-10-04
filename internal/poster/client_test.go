@@ -68,16 +68,24 @@ func TestClientPostError(t *testing.T) {
 	tests := []struct {
 		name        string
 		fixture     string
+		body        string
 		wantClicked bool
 	}{
 		{name: "before click", fixture: "post-error-before-click.json"},
 		{name: "after click", fixture: "post-error-after-click.json", wantClicked: true},
+		{name: "missing click state", body: `{"error":"outcome unknown"}`, wantClicked: true},
+		{name: "null click state", body: `{"error":"outcome unknown","clicked":null}`, wantClicked: true},
+		{name: "empty response", body: `{}`, wantClicked: true},
+		{name: "null response", body: `null`, wantClicked: true},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			body := readFixture(t, tt.fixture)
+			body := []byte(tt.body)
+			if tt.fixture != "" {
+				body = readFixture(t, tt.fixture)
+			}
 			server := testutil.Server(t, func(w http.ResponseWriter, _ *http.Request) {
 				w.Header().Set("Content-Type", "application/json")
 				w.WriteHeader(http.StatusInternalServerError)

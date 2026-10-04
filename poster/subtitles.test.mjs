@@ -59,29 +59,40 @@ test('accepts base64 SRT and rejects missing credentials before opening the file
   assert.equal(await generateSubtitles(f.file, { apiKey: 'test-key' }), srt);
 });
 
-test('rejects failures, empty/malformed/oversized output, truncation and cancellation', async (t) => {
-  const cases = {
-    unavailable: (req, res) => res.writeHead(503).end('not ready'),
-    unauthorized: (req, res) => res.writeHead(401).end('not authorized'),
-    quota: (req, res) => res.writeHead(429).end('quota exceeded'),
-    redirect: (req, res) => res.writeHead(302, { location: 'http://untrusted.invalid' }).end(),
-    empty: (req, res) => res.end(transcript('')),
-    missing: (req, res) => res.end('{}'),
-    timing: (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:00:01,000'))),
-    tooLong: (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:20:00,001'))),
-    overlap: (req, res) => res.end(transcript(srt + srt.replace('1\n', '2\n'))),
-    incomplete: (req, res) => res.end(transcript(srt + '2\n00:00:04,000 --> 00:00:05,000\n')),
-    html: (req, res) => res.end('<html>Error</html>'),
-    utf8: (req, res) => res.end(Buffer.from([0xff])),
-    oversized: (req, res) => res.end(Buffer.alloc(4 * 1024 * 1024 + 1)),
-    truncated: (req, res) => { res.writeHead(200, { 'content-length': 10000 }); res.end(srt); },
-    timeout: () => {},
-  };
-  for (const [name, handler] of Object.entries(cases)) {
-    await t.test(name, async (t) => {
+test('rejects HTTP failures and invalid transcripts', async (t) => {
+  const cases = [
+    ['unavailable', (req, res) => res.writeHead(503).end(), /HTTP 503/],
+    ['unauthorized', (req, res) => res.writeHead(401).end(), /HTTP 401/],
+    ['quota', (req, res) => res.writeHead(429).end(), /HTTP 429/],
+    ['redirect', (req, res) => res.writeHead(302, { location: 'http://untrusted.invalid' }).end(), /fetch failed/],
+    ['empty', (req, res) => res.end(transcript('')), /invalid SRT captions/],
+    ['missing', (req, res) => res.end('{}'), /no SRT captions/],
+    ['timing', (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:00:01,000'))), /invalid SRT timing/],
+    ['too long', (req, res) => res.end(transcript(srt.replace('00:00:03,400', '00:20:00,001'))), /invalid SRT timing/],
+    ['overlap', (req, res) => res.end(transcript(srt + srt.replace('1\n', '2\n'))), /invalid SRT timing/],
+    ['incomplete', (req, res) => res.end(transcript(srt + '2\n00:00:04,000 --> 00:00:05,000\n')), /invalid SRT captions/],
+    ['html', (req, res) => res.end('<html>Error</html>'), SyntaxError],
+    ['utf8', (req, res) => res.end(Buffer.from([0xff])), /encoded data/],
+    ['oversized', (req, res) => res.end(Buffer.alloc(4 * 1024 * 1024 + 1)), /transcript is too large/],
+    ['truncated', (req, res) => res.writeHead(200, { 'content-length': 10000, connection: 'close' }).end(srt), /terminated/],
+  ];
+  for (const [name, handler, error] of cases) {
+    await t.test(name, { timeout: 5000 }, async (t) => {
       const f = await fixture(t, handler);
-      await assert.rejects(generateSubtitles(f.file, { apiKey: 'test-key', signal: AbortSignal.timeout(100) }));
+      await assert.rejects(generateSubtitles(f.file, { apiKey: 'test-key', signal: t.signal }), error);
       assert.deepEqual(await readdir(f.directory), ['video.mp4']);
     });
   }
+});
+
+test('cancels an in-flight transcription when the caller disconnects', { timeout: 5000 }, async (t) => {
+  const received = Promise.withResolvers();
+  const f = await fixture(t, () => received.resolve());
+  const controller = new AbortController();
+  const rejected = assert.rejects(generateSubtitles(f.file, {
+    apiKey: 'test-key', signal: AbortSignal.any([controller.signal, t.signal]),
+  }), { name: 'AbortError' });
+  await received.promise;
+  controller.abort();
+  await rejected;
 });

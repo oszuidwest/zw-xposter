@@ -62,8 +62,7 @@ function uploadCommand(url, request) {
   return form ? new URLSearchParams(request.postData() || '').get('command') : null;
 }
 
-// X can show a preview while it is still encoding the video. Require its upload
-// response to confirm processing succeeded before allowing the Post button.
+// X's preview can precede encoding; require confirmed processing success.
 export async function uploadVideo(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},

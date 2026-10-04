@@ -360,7 +360,7 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-// video holds a local path and generated captions, so it is never part of the request payload.
+// video is server-owned; request payloads must never supply local paths.
 async function createPost({ text, image, dryRun }, clientGone, video) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');

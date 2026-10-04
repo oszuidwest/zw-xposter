@@ -54,6 +54,7 @@ func TestPollVideoTakesPriority(t *testing.T) {
 		{name: "dry run reports an unsupported video", dryRun: true, download: quicktime, wantStatus: state.StatusFailedTerminal, wantError: "only video/mp4 is supported"},
 		{name: "upload failure retries", postError: `{"error":"encoding failed","clicked":false}`, wantStatus: state.StatusRetry, wantPosts: 1, wantBackoff: retryInitial},
 		{name: "post-click failure reconciles", postError: `{"error":"confirmation missing","clicked":true}`, wantStatus: state.StatusUncertain, wantPosts: 1, wantBackoff: uncertainMinimum},
+		{name: "missing click state reconciles", postError: `{"error":"outcome unknown"}`, wantStatus: state.StatusUncertain, wantPosts: 1, wantBackoff: uncertainMinimum},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var contentCalls int

@@ -31,7 +31,7 @@ export async function generateSubtitles(videoFile, {
     format: 'srt', include_speakers: false, max_characters_per_line: 42,
     max_segment_chars: 84, max_segment_duration_s: 6,
   }]));
-  // Native file-backed Blob keeps even a 512 MiB MP4 out of the JS heap.
+  // Stream from disk to keep the MP4 out of the JS heap.
   form.set('file', await openAsBlob(videoFile, { type: 'video/mp4' }), 'video.mp4');
   const timeout = AbortSignal.timeout(SUBTITLE_TIMEOUT_MS);
   const response = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
