@@ -57,6 +57,29 @@ jobs:
       contents: read
       packages: write
 
+  release:
+    needs: [version, publish]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      # Keeps a release created by hand, with its notes, when one already exists.
+      - name: Create GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: ${{ needs.version.outputs.value }}
+        run: |
+          if gh release view "$VERSION" >/dev/null 2>&1; then
+            echo "Release $VERSION already exists."
+            exit 0
+          fi
+          if [[ "$VERSION" == *-* ]]; then
+            gh release create "$VERSION" --verify-tag --title "${VERSION#v}" --generate-notes --prerelease
+          else
+            gh release create "$VERSION" --verify-tag --title "${VERSION#v}" --generate-notes --latest
+          fi
+
   cleanup:
     needs: publish
     runs-on: ubuntu-latest
