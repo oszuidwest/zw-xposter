@@ -19,9 +19,9 @@
   };
   if (location.pathname === '/fixture_account') {
     (async () => {
-      const response = await fetch('/i/api/graphql/offline/UserTweets?variables=%7B%7D');
+      const response = await fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%7D');
       if (response.headers.get('x-offline-next')) {
-        await fetch('/i/api/graphql/offline/UserTweets?variables=%7B%22cursor%22%3A%22next%22%7D');
+        await fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%22cursor%22%3A%22next%22%7D');
       }
     })();
   }
