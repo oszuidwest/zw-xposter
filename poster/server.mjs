@@ -352,7 +352,8 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-async function createPost({ text, image, videoFile, dryRun }, clientGone) {
+// videoFile is a local path, so it is never part of the request payload.
+async function createPost({ text, image, dryRun }, clientGone, videoFile) {
   const throwIfGone = () => {
     if (clientGone()) throw new Error('client disconnected before clicking post');
   };
@@ -482,9 +483,9 @@ function send(res, status, body) {
 }
 
 // A destroyed response means the client has disconnected.
-async function postAndSend(res, post) {
-  log(post.videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
-  const result = await exclusive(() => createPost(post, () => res.destroyed));
+async function postAndSend(res, post, videoFile) {
+  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+  const result = await exclusive(() => createPost(post, () => res.destroyed, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
 }
@@ -526,8 +527,7 @@ export const server = http.createServer(async (req, res) => {
       if (payload.image && (!payload.image.mime || !payload.image.data)) {
         return send(res, 400, { error: 'image needs mime and data' });
       }
-      // Copy known fields so JSON can never select a local videoFile.
-      return await postAndSend(res, { text: payload.text, image: payload.image, dryRun: payload.dryRun });
+      return await postAndSend(res, payload);
     }
     if (req.method === 'POST' && url.pathname === '/post-video') {
       let text;
@@ -540,7 +540,7 @@ export const server = http.createServer(async (req, res) => {
       }
       const video = await receiveVideo(req);
       try {
-        return await postAndSend(res, { text, videoFile: video.file });
+        return await postAndSend(res, { text }, video.file);
       } finally {
         await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
       }

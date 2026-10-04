@@ -4,7 +4,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
-import { clearTimeout, setTimeout } from 'node:timers';
 import { URLSearchParams } from 'node:url';
 import { TextDecoder } from 'node:util';
 
@@ -64,44 +63,38 @@ export async function uploadVideo(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},
 } = {}) {
-  const ready = Promise.withResolvers();
-  // An upload can fail while setInputFiles is still pending.
-  ready.promise.catch(() => {});
-  const timer = setTimeout(() => ready.reject(new Error('video upload/processing timed out')), timeoutMs);
+  throwIfCancelled();
   let mediaID;
-  const response = async (res) => {
+  // Aborting stops the wait if selecting the file fails before X responds.
+  const release = new AbortController();
+  const ready = page.waitForResponse(async (res) => {
     const url = new URL(res.url());
-    if (!isMediaUpload(url)) return;
-    try {
-      if (!res.ok()) throw new Error(`video upload returned HTTP ${res.status()}`);
-      if (res.status() === 204) return; // APPEND acknowledgements have no JSON.
-      const body = await res.json();
-      if (body.errors?.length || body.error) {
-        throw new Error(`video upload rejected: ${JSON.stringify(body.errors || body.error)}`);
-      }
-      const id = body.media_id_string;
-      mediaID ||= id;
-      if (id && id !== mediaID) return;
-      const info = body.processing_info;
-      if (info?.state === 'failed') {
-        throw new Error(`video processing failed: ${JSON.stringify(info.error || info)}`);
-      }
-      if (info?.state === 'succeeded') ready.resolve();
-      // FINALIZE without processing_info means synchronous completion.
-      if (id && !info && uploadCommand(url, res.request()) === 'FINALIZE') ready.resolve();
-    } catch (err) {
-      ready.reject(err);
+    if (!isMediaUpload(url)) return false;
+    if (!res.ok()) throw new Error(`video upload returned HTTP ${res.status()}`);
+    if (res.status() === 204) return false; // APPEND acknowledgements have no JSON.
+    const body = await res.json();
+    if (body.errors?.length || body.error) {
+      throw new Error(`video upload rejected: ${JSON.stringify(body.errors || body.error)}`);
     }
-  };
-  page.on('response', response);
+    const id = body.media_id_string;
+    mediaID ||= id;
+    if (id && id !== mediaID) return false;
+    const info = body.processing_info;
+    if (info?.state === 'failed') {
+      throw new Error(`video processing failed: ${JSON.stringify(info.error || info)}`);
+    }
+    // FINALIZE without processing_info means synchronous completion.
+    return info?.state === 'succeeded' || Boolean(id && !info && uploadCommand(url, res.request()) === 'FINALIZE');
+  }, { timeout: timeoutMs, signal: release.signal });
   try {
-    throwIfCancelled();
-    await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles(file, { timeout: timeoutMs });
-    await ready.promise;
+    // An upload can fail while setInputFiles is still pending.
+    await Promise.all([
+      dialog.locator('input[data-testid="fileInput"]').first().setInputFiles(file, { timeout: timeoutMs }),
+      ready,
+    ]);
     throwIfCancelled();
     await dialog.locator('[data-testid="attachments"] video').first().waitFor({ timeout: 30_000 });
   } finally {
-    clearTimeout(timer);
-    page.off('response', response);
+    release.abort();
   }
 }

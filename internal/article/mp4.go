@@ -39,20 +39,16 @@ func mp4Duration(r io.ReadSeeker) (time.Duration, error) {
 	}
 	// Version and flags, creation and modification times, timescale, duration.
 	var mvhd [32]byte
-	need := 20
-	if mvhdEnd-start >= int64(need) {
-		if _, err := io.ReadFull(r, mvhd[:1]); err != nil {
-			return 0, err
-		}
-		if mvhd[0] == 1 {
-			need = 32
-		}
-	}
-	if mvhdEnd-start < int64(need) {
-		return 0, fmt.Errorf("%w: mvhd box is truncated", ErrUnsupportedVideo)
-	}
-	if _, err := io.ReadFull(r, mvhd[1:need]); err != nil {
+	n := min(mvhdEnd-start, int64(len(mvhd)))
+	if _, err := io.ReadFull(r, mvhd[:n]); err != nil {
 		return 0, err
+	}
+	need := int64(20)
+	if mvhd[0] == 1 {
+		need = 32
+	}
+	if n < need {
+		return 0, fmt.Errorf("%w: mvhd box is truncated", ErrUnsupportedVideo)
 	}
 	var timescale uint32
 	var units uint64

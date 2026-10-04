@@ -4,6 +4,7 @@ import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
+import { clearTimeout, setTimeout } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
@@ -33,8 +34,26 @@ test('binary video storage is bounded and cleans up success and failure', async 
   }
 });
 
-function uploadFixture() {
+function uploadFixture({ selectError } = {}) {
   const page = new EventEmitter();
+  // Like Playwright: settle on a truthy or throwing predicate, timeout or abort, then stop listening.
+  page.waitForResponse = (predicate, { timeout, signal }) => new Promise((resolve, reject) => {
+    const settle = (fn, value) => {
+      clearTimeout(timer);
+      page.off('response', listener);
+      fn(value);
+    };
+    const listener = async (res) => {
+      try {
+        if (await predicate(res)) settle(resolve, res);
+      } catch (err) {
+        settle(reject, err);
+      }
+    };
+    const timer = setTimeout(() => settle(reject, new Error('timeout')), timeout);
+    signal.addEventListener('abort', () => settle(reject, signal.reason), { once: true });
+    page.on('response', listener);
+  });
   const selected = Promise.withResolvers();
   let previews = 0;
   const dialog = {
@@ -44,6 +63,7 @@ function uploadFixture() {
           assert.equal(selector, 'input[data-testid="fileInput"]');
           assert.equal(file, '/tmp/fixture.mp4');
           selected.resolve();
+          if (selectError) throw selectError;
         },
         async waitFor() {
           assert.equal(selector, '[data-testid="attachments"] video');
@@ -99,9 +119,9 @@ test('synchronous FINALIZE succeeds without processing_info', async (t) => {
 });
 
 test('upload errors, failed encoding, timeout and cancellation prevent posting', async (t) => {
-  for (const mode of ['http', 'encoding', 'api', 'timeout', 'cancelled']) {
+  for (const mode of ['http', 'encoding', 'api', 'timeout', 'cancelled', 'file selection']) {
     await t.test(mode, async () => {
-      const f = uploadFixture();
+      const f = uploadFixture({ selectError: mode === 'file selection' ? new Error('input detached') : undefined });
       const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', {
         timeoutMs: mode === 'timeout' ? 20 : 1000,
         throwIfCancelled: () => { if (mode === 'cancelled') throw new Error('client gone'); },
