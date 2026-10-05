@@ -295,16 +295,9 @@ func TestPollLostResponseIsReconciledWithoutSecondPost(t *testing.T) {
 			}
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": posts, "complete": true})
 		},
-		post: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+		post: func(_ http.ResponseWriter, _ *http.Request, _ feed.Item) {
 			posted.Store(true)
-			conn, _, err := w.(http.Hijacker).Hijack()
-			if err != nil {
-				t.Errorf("hijack response: %v", err)
-				return
-			}
-			if err := conn.Close(); err != nil {
-				t.Errorf("close hijacked connection: %v", err)
-			}
+			panic(http.ErrAbortHandler)
 		},
 	})
 

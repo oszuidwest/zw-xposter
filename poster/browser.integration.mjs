@@ -1,32 +1,39 @@
 // Run explicitly (or through container/test.sh); the unit suite needs no browser.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdtempDisposable, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
 test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async (t) => {
-  const dataDir = await mkdtemp(path.join(os.tmpdir(), 'poster-workflow-'));
-  let context;
-  let server;
-  t.after(async () => {
-    try {
-      await context?.close();
-      if (server?.listening) await server[Symbol.asyncDispose]();
-    } finally {
-      await rm(dataDir, { recursive: true, force: true });
-    }
-  });
-  process.env.DATA_DIR = dataDir;
+  const cleanup = new AsyncDisposableStack();
+  t.after(() => cleanup.disposeAsync());
+  process.env.DATA_DIR = cleanup.use(await mkdtempDisposable(path.join(os.tmpdir(), 'poster-workflow-'))).path;
   process.env.X_USERNAME = 'fixture_account';
   process.env.X_AUTH_TOKEN = 'offline-test';
   process.env.X_PASSWORD = '';
   process.env.HEADLESS = 'true';
+  process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
+  const srt = '1\n00:00:00,000 --> 00:00:02,500\nNieuws uit West-Brabant.\n\n';
+  let failTranscription = false;
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', async (url, options) => {
+    if (url === 'https://api.elevenlabs.io/v1/speech-to-text') {
+      return new globalThis.Response(JSON.stringify({ additional_formats: [{
+        requested_format: 'srt', is_base64_encoded: false, content: srt,
+      }] }), { status: failTranscription ? 503 : 200 });
+    }
+    assert.equal(new URL(url).hostname, '127.0.0.1', 'no external HTTP in the offline test');
+    return realFetch(url, options);
+  });
 
   const poster = await import('./server.mjs');
-  server = poster.server;
-  context = await poster.launch();
+  const server = poster.server;
+  cleanup.defer(async () => {
+    if (server.listening) await server[Symbol.asyncDispose]();
+  });
+  const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
   const pageHTML = await fixture('browser-page.html');
   let rejectPost = false;
@@ -35,6 +42,14 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   let videoStatusRequested;
   let videoProcessing;
   let uploadedBytes = 0;
+  let captionsRequested;
+  let captionsAccepted;
+  t.beforeEach(() => {
+    videoStatusRequested = Promise.withResolvers();
+    videoProcessing = Promise.withResolvers();
+    captionsRequested = Promise.withResolvers();
+    captionsAccepted = Promise.withResolvers();
+  });
   const published = [];
   const unexpected = [];
   await context.route('**/*', async (route) => {
@@ -43,6 +58,12 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
     if (url.origin !== 'https://x.com') {
       unexpected.push(request.url());
       return route.abort();
+    }
+    if (url.pathname === '/offline/captions') {
+      assert.equal(request.postData(), srt);
+      captionsRequested.resolve();
+      await captionsAccepted.promise;
+      return route.fulfill({ status: 200, body: '' });
     }
     if (url.pathname === '/i/media/upload.json') {
       const command = url.searchParams.get('command');
@@ -92,10 +113,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   const post = (text, signal) => fetch(`${base}/post`, {
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal,
   });
-  const postVideo = (text, bytes) => fetch(`${base}/post-video`, {
+  const postVideo = (text, bytes, signal) => fetch(`${base}/post-video`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64') },
     body: bytes,
+    signal,
   });
 
   await t.test('validates requests before browser work and keeps readiness passive', async () => {
@@ -129,16 +151,18 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
     assert.deepEqual(published.slice(before).sort(), ['First', 'Second']);
   });
 
-  await t.test('a client disconnect during composition prevents publication', async () => {
+  for (const video of [false, true]) await t.test(`cancelled ${video ? 'captions' : 'text'} never publishes`, async () => {
+    videoProcessing.resolve();
     const before = [...published];
     const controller = new AbortController();
-    const response = post('Cancelled', controller.signal);
+    const response = video ? postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal)
+      : post('Cancelled', controller.signal);
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
-    const page = context.pages()[0];
-    await page.locator('[role=dialog]:not([hidden])').waitFor();
+    await (video ? captionsRequested.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
     controller.abort();
     await aborted;
+    captionsAccepted.resolve();
     // This request queues behind the abandoned post; completion proves cleanup ran.
     const recent = await fetch(`${base}/recent?hours=1`);
     assert.equal(recent.status, 200);
@@ -157,8 +181,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
   });
 
   await t.test('binary videos larger than the JSON limit wait for encoding before posting', async () => {
-    videoStatusRequested = Promise.withResolvers();
-    videoProcessing = Promise.withResolvers();
     const before = [...published];
     const bytes = Buffer.alloc(21 * 1024 * 1024, 1);
     const response = postVideo('Video café 🎥', bytes);
@@ -166,25 +188,27 @@ test('poster HTTP workflow with an offline browser', { timeout: 360_000 }, async
     assert.equal(uploadedBytes, bytes.length);
     assert.deepEqual(published, before, 'a preview and enabled button do not mean the video is ready');
     videoProcessing.resolve();
+    await captionsRequested.promise;
+    assert.deepEqual(published, before, 'caption selection alone must not allow publication');
+    captionsAccepted.resolve();
     const result = await response;
     assert.equal(result.status, 200);
     assert.match((await result.json()).url, /\/status\//);
     assert.equal(published.at(-1), 'Video café 🎥');
   });
 
-  await t.test('failed video processing never clicks Post', async () => {
-    failVideo = true;
-    videoStatusRequested = Promise.withResolvers();
-    videoProcessing = Promise.withResolvers();
+  for (const transcription of [true, false]) await t.test(`failed ${transcription ? 'transcription' : 'encoding'} never posts`, async () => {
+    failTranscription = transcription;
+    failVideo = !transcription;
     videoProcessing.resolve();
     const before = [...published];
     const response = await postVideo('Bad video', Buffer.from('synthetic MP4'));
     assert.equal(response.status, 500);
     const result = await response.json();
     assert.equal(result.clicked, false);
-    assert.match(result.error, /Synthetic encoding failure/);
+    assert.match(result.error, transcription ? /ElevenLabs transcription returned HTTP 503/ : /Synthetic encoding failure/);
     assert.deepEqual(published, before);
-    failVideo = false;
+    failTranscription = failVideo = false;
   });
 
   await t.test('an HTTP failure in pagination refuses the whole recent result', async () => {

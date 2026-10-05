@@ -15,7 +15,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
-import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
+import { MAX_VIDEO_BYTES, receiveVideo, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
+import { generateSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
   sessionHealth,
@@ -111,6 +112,7 @@ export async function launch() {
   await writeLanguagePreference();
 
   context = await chromium.launchPersistentContext(PROFILE_DIR, {
+    env: { ...process.env, ELEVENLABS_API_KEY: undefined },
     // Use full Chromium with its native user agent, client hints and platform.
     channel: 'chromium',
     headless: HEADLESS,
@@ -217,6 +219,13 @@ async function dismissOverlay(page, button, message) {
   await humanClick(page, button);
   await button.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
   log(message);
+}
+
+// X's one-time video notice can cover the caption and Post buttons.
+function acknowledgeNotice(page) {
+  return dismissOverlay(page,
+    page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
+    'acknowledged an X notice');
 }
 
 async function isLoggedIn(page) {
@@ -352,12 +361,15 @@ async function runSessionChecks() {
 }
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
-// videoFile is a local path, so it is never part of the request payload.
-async function createPost({ text, image, dryRun }, clientGone, videoFile) {
+// videoFile is server-owned; request payloads must never supply local paths.
+async function createPost({ text, image, dryRun }, signal, videoFile) {
   const throwIfGone = () => {
-    if (clientGone()) throw new Error('client disconnected before clicking post');
+    if (signal.aborted) throw new Error('client disconnected before clicking post');
   };
   // The request may have waited in the queue behind other browser work.
+  throwIfGone();
+  if (videoFile) log('generating Dutch subtitles');
+  const subtitles = videoFile ? await generateSubtitles(videoFile, { signal }) : undefined;
   throwIfGone();
   const page = await getTab();
   let clicked = false;
@@ -380,6 +392,8 @@ async function createPost({ text, image, dryRun }, clientGone, videoFile) {
 
     if (videoFile) {
       await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
+      await acknowledgeNotice(page);
+      await uploadSubtitles(page, dialog, subtitles, { throwIfCancelled: throwIfGone });
     } else if (image) {
       await pause(800, 2000);
       await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
@@ -394,10 +408,7 @@ async function createPost({ text, image, dryRun }, clientGone, videoFile) {
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Let the composer settle before clicking or capturing a dry run.
     await pause(1500, 4000);
-    // X's one-time video notice can cover the composer's Post button.
-    await dismissOverlay(page,
-      page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
-      'acknowledged an X notice');
+    await acknowledgeNotice(page);
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run');
@@ -482,10 +493,13 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-// A destroyed response means the client has disconnected.
 async function postAndSend(res, post, videoFile) {
   log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
-  const result = await exclusive(() => createPost(post, () => res.destroyed, videoFile));
+  const controller = new AbortController();
+  if (res.destroyed) controller.abort();
+  else res.once('close', () => controller.abort());
+  // Transcribe inside the queue so posts keep their request order.
+  const result = await exclusive(() => createPost(post, controller.signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
 }

@@ -31,6 +31,7 @@ services:
       - GRAPH_CLIENT_SECRET
       - GRAPH_FROM_ADDRESS
       - ALERT_RECIPIENTS
+      - ELEVENLABS_API_KEY
     volumes:
       - xposter-data:/data
     tmpfs:

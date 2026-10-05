@@ -6,11 +6,16 @@ import { Transform } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 import { URLSearchParams } from 'node:url';
 import { TextDecoder } from 'node:util';
+import xUI from './x-ui.json' with { type: 'json' };
 
 // Must match maxVideoSize in internal/article/video.go. Videos travel as binary, never as JSON/base64.
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 const VIDEO_RECEIVE_TIMEOUT_MS = 5 * 60_000;
 const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
+const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
+const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
+const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
+const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -57,8 +62,7 @@ function uploadCommand(url, request) {
   return form ? new URLSearchParams(request.postData() || '').get('command') : null;
 }
 
-// X can show a preview while it is still encoding the video. Require its upload
-// response to confirm processing succeeded before allowing the Post button.
+// X's preview can precede encoding; require confirmed processing success.
 export async function uploadVideo(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},
@@ -97,4 +101,22 @@ export async function uploadVideo(page, dialog, file, {
   } finally {
     release.abort();
   }
+}
+
+export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = () => {} } = {}) {
+  if (!srt) throw new Error('video subtitles are required');
+  throwIfCancelled();
+  await dialog.getByRole('button', { name: CAPTION_UPLOAD }).click();
+  const captions = page.locator('[role="dialog"][aria-modal="true"]').filter({
+    has: page.getByRole('button', { name: CAPTION_DONE }),
+  });
+  await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles({
+    name: 'video.nl.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt),
+  });
+  await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
+  throwIfCancelled();
+  await captions.getByRole('button', { name: CAPTION_DONE }).click();
+  // X replaces the upload action with the language or its generic captions label.
+  await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: 60_000 });
+  throwIfCancelled();
 }

@@ -1,10 +1,9 @@
 import assert from 'node:assert/strict';
-import { EventEmitter } from 'node:events';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { EventEmitter, on } from 'node:events';
+import { mkdtempDisposable, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { Readable } from 'node:stream';
-import { clearTimeout, setTimeout } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
 import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
@@ -17,10 +16,10 @@ test('video text preserves Unicode and rejects invalid headers', () => {
   }
 });
 
-test('binary video storage is bounded and cleans up success and failure', async (t) => {
+test('binary video storage is bounded and cleans up success and failure', async () => {
   assert.equal(MAX_VIDEO_BYTES, 512 << 20);
-  const tempDir = await mkdtemp(path.join(os.tmpdir(), 'video-storage-test-'));
-  t.after(() => rm(tempDir, { recursive: true, force: true }));
+  await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'video-storage-test-'));
+  const tempDir = directory.path;
   const video = await receiveVideo(Readable.from([Buffer.from('123'), Buffer.from('456')]), { maxBytes: 6, tempDir });
   assert.equal(await readFile(video.file, 'utf8'), '123456');
   await video.cleanup();
@@ -37,23 +36,14 @@ test('binary video storage is bounded and cleans up success and failure', async 
 function uploadFixture({ selectError } = {}) {
   const page = new EventEmitter();
   // Like Playwright: settle on a truthy or throwing predicate, timeout or abort, then stop listening.
-  page.waitForResponse = (predicate, { timeout, signal }) => new Promise((resolve, reject) => {
-    const settle = (fn, value) => {
-      clearTimeout(timer);
-      page.off('response', listener);
-      fn(value);
-    };
-    const listener = async (res) => {
-      try {
-        if (await predicate(res)) settle(resolve, res);
-      } catch (err) {
-        settle(reject, err);
+  page.waitForResponse = (predicate, { timeout, signal }) => Promise.race([
+    (async () => {
+      for await (const [res] of on(page, 'response', { signal })) {
+        if (await predicate(res)) return res;
       }
-    };
-    const timer = setTimeout(() => settle(reject, new Error('timeout')), timeout);
-    signal.addEventListener('abort', () => settle(reject, signal.reason), { once: true });
-    page.on('response', listener);
-  });
+    })(),
+    sleep(timeout, undefined, { signal }).then(() => { throw new Error('timeout'); }),
+  ]);
   const selected = Promise.withResolvers();
   let previews = 0;
   const dialog = {

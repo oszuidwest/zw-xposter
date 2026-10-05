@@ -6,7 +6,6 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -695,7 +694,6 @@ func (a *app) pingHeartbeat(ctx context.Context) {
 		return
 	}
 	defer func() { _ = resp.Body.Close() }()
-	_, _ = io.Copy(io.Discard, io.LimitReader(resp.Body, 64<<10))
 	if resp.StatusCode >= http.StatusBadRequest {
 		slog.Warn("heartbeat returned an error", "status", resp.Status)
 	}

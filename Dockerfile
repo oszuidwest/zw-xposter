@@ -57,7 +57,7 @@ WORKDIR /app/poster
 COPY --from=poster-build /ms-playwright /ms-playwright
 COPY --from=poster-build /build/node_modules ./node_modules
 COPY --from=go-build --chmod=0555 /orchestrator /app/orchestrator
-COPY poster/server.mjs poster/timeline.mjs poster/health.mjs poster/debug.mjs poster/media.mjs poster/x-ui.json ./
+COPY poster/server.mjs poster/timeline.mjs poster/health.mjs poster/debug.mjs poster/media.mjs poster/subtitles.mjs poster/x-ui.json ./
 COPY --chmod=0555 container/entrypoint.sh /app/entrypoint.sh
 COPY container/healthcheck.mjs /app/healthcheck.mjs
 

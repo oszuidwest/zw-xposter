@@ -8,8 +8,7 @@ import (
 	"strings"
 )
 
-// Open returns the response for url once its status is 200; the caller closes
-// the body. A non-200 response is an error.
+// Open requires HTTP 200; the caller must close the returned body.
 func Open(ctx context.Context, client *http.Client, url string) (*http.Response, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, http.NoBody)
 	if err != nil {
@@ -26,8 +25,7 @@ func Open(ctx context.Context, client *http.Client, url string) (*http.Response,
 	return resp, nil
 }
 
-// Get returns the body of url, at most limit bytes, and its content type. A
-// larger or non-200 response is an error.
+// Get returns the body and content type, rejecting non-200 or oversized responses.
 func Get(ctx context.Context, client *http.Client, url string, limit int64) (body []byte, contentType string, err error) {
 	resp, err := Open(ctx, client, url)
 	if err != nil {

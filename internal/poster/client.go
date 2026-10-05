@@ -49,11 +49,10 @@ type request struct {
 type response struct {
 	URL     string `json:"url"`
 	Error   string `json:"error"`
-	Clicked bool   `json:"clicked"`
+	Clicked *bool  `json:"clicked"`
 }
 
-// PostError is an error response from the poster. Clicked distinguishes a
-// safe pre-click failure from a post whose outcome must be reconciled.
+// PostError is a poster failure. Clicked is true unless a pre-click failure is confirmed.
 type PostError struct {
 	Status  string
 	Message string
@@ -90,8 +89,8 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader) (s
 	req.Header.Set("Content-Type", "video/mp4")
 	req.Header.Set("X-Post-Text", base64.StdEncoding.EncodeToString([]byte(text)))
 	client := *c.http
-	// Allow receipt (5 minutes), upload/processing (10), and browser confirmation.
-	client.Timeout = 20 * time.Minute
+	// Allow transcription (10 minutes), receipt (5), upload (10), and confirmation.
+	client.Timeout = 30 * time.Minute
 	return c.sendPost(req, &client)
 }
 
@@ -114,7 +113,7 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (string, error
 		return "", &PostError{
 			Status:  resp.Status,
 			Message: out.Error,
-			Clicked: out.Clicked,
+			Clicked: out.Clicked == nil || *out.Clicked,
 		}
 	}
 	if strings.TrimSpace(out.URL) == "" {
