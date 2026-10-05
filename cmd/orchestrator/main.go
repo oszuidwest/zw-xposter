@@ -510,23 +510,18 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 			return "", err
 		}
 		if video != nil {
-			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == "video_captions")
+			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == state.FormatVideoCaptions)
 		} else {
 			result.URL, postErr = a.poster.Post(ctx, text, img)
 		}
 		closeVideo()
 		pe, known := errors.AsType[*poster.PostError](postErr)
-		if video != nil {
-			if known {
-				result.Captions, result.FallbackReason = pe.Captions, pe.FallbackReason
+		if video != nil && result.Captions == poster.CaptionsNone {
+			entry.Format = state.FormatVideo
+			if result.FallbackReason != "" {
+				entry.FallbackReason = result.FallbackReason
 			}
-			if result.Captions == "none" {
-				entry.Format = "video"
-				if result.FallbackReason != "" {
-					entry.FallbackReason = result.FallbackReason
-				}
-				log.Info("video captions skipped", "reason", entry.FallbackReason)
-			}
+			log.Info("video captions skipped", "reason", entry.FallbackReason)
 		}
 		if postErr == nil {
 			entry.Status, entry.PostURL, entry.LastError = state.StatusPosted, result.URL, ""
@@ -553,16 +548,22 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 	}
 }
 
+// nextFormat is the fallback chain, one step at a time.
+var nextFormat = map[string]string{
+	state.FormatVideoCaptions: state.FormatImage,
+	state.FormatVideo:         state.FormatImage,
+	state.FormatImage:         state.FormatText,
+}
+
 // fallbackFormat requires a confirmed pre-click failure in the selected medium.
 func fallbackFormat(format string, err *poster.PostError) string {
 	if err == nil || err.Clicked {
 		return ""
 	}
 	switch {
-	case (format == "video_captions" || format == "video") && err.Stage == "video":
-		return "image"
-	case format == "image" && err.Stage == "image":
-		return "text"
+	case (format == state.FormatVideoCaptions || format == state.FormatVideo) && err.Stage == poster.StageVideo,
+		format == state.FormatImage && err.Stage == poster.StageImage:
+		return nextFormat[format]
 	default:
 		return ""
 	}
@@ -582,12 +583,13 @@ func (a *app) advanceFormat(ctx context.Context, guid string, entry *state.Entry
 	return nil
 }
 
-// prepareMedia only descends the chain, retaining the existing download protections.
+// prepareMedia fetches media for entry.Format, descending the chain while a
+// download fails; it never moves back up.
 func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.Entry) (*article.Image, *article.Video, error) {
 	if entry.Format == "" {
-		entry.Format = "image"
+		entry.Format = state.FormatImage
 		if item.VideoURL != "" {
-			entry.Format = "video_captions"
+			entry.Format = state.FormatVideoCaptions
 		}
 	}
 	for {
@@ -595,28 +597,25 @@ func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.En
 			return nil, nil, err
 		}
 		var err error
-		var next string
 		switch entry.Format {
-		case "video_captions", "video":
+		case state.FormatVideoCaptions, state.FormatVideo:
 			var video *article.Video
 			video, err = article.FetchVideo(ctx, a.http, item.VideoURL)
 			if err == nil {
 				return nil, video, nil
 			}
-			next = "image"
-		case "image":
+		case state.FormatImage:
 			var img *article.Image
 			img, err = article.FetchImage(ctx, a.http, item.Link)
 			if err == nil {
 				return img, nil, nil
 			}
-			next = "text"
-		case "text":
+		case state.FormatText:
 			return nil, nil, nil
 		default:
 			return nil, nil, fmt.Errorf("unknown publication format %q", entry.Format)
 		}
-		if err := a.advanceFormat(ctx, item.GUID, entry, next, err.Error()); err != nil {
+		if err := a.advanceFormat(ctx, item.GUID, entry, nextFormat[entry.Format], err.Error()); err != nil {
 			return nil, nil, err
 		}
 	}

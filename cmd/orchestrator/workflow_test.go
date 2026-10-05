@@ -63,23 +63,14 @@ func TestPollVideoTakesPriority(t *testing.T) {
 			t.Setenv("TMPDIR", downloadDir)
 			var contentCalls int
 			fixture := newPollTest(t, &pollTestOptions{
+				video: true,
 				content: func(w http.ResponseWriter, r *http.Request) {
 					contentCalls++
-					if r.URL.Path != "/video.mp4" {
-						if r.URL.Path == "/article" {
-							_, _ = fmt.Fprintf(w, `<meta property="og:image" content="http://%s/share.png">`, html.EscapeString(r.Host))
-						} else {
-							w.Header().Set("Content-Type", "image/png")
-							_, _ = io.WriteString(w, "image")
-						}
-						return
-					}
-					if tt.download != nil {
+					if tt.download != nil && r.URL.Path == "/video.mp4" {
 						tt.download(w)
 						return
 					}
-					w.Header().Set("Content-Type", "video/mp4")
-					_, _ = w.Write(mp4)
+					fallbackContent(w, r)
 				},
 				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
 					if tt.download != nil {
@@ -112,7 +103,6 @@ func TestPollVideoTakesPriority(t *testing.T) {
 					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/video", "captions": "attached"})
 				},
 			})
-			fixture.items[0].VideoURL = strings.TrimSuffix(fixture.item.Link, "/article") + "/video.mp4"
 			fixture.app.cfg.DryRun = tt.dryRun
 			before := fixture.app.store.Items[fixture.item.GUID]
 			entry := fixture.poll()

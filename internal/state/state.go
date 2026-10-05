@@ -21,6 +21,14 @@ const (
 	StatusFailedTerminal = "failed_terminal"
 )
 
+// Publication format of a feed item, from richest to plainest.
+const (
+	FormatVideoCaptions = "video_captions"
+	FormatVideo         = "video"
+	FormatImage         = "image"
+	FormatText          = "text"
+)
+
 // Entry is the stored outcome for one feed item.
 type Entry struct {
 	Title             string    `json:"title"`
@@ -30,7 +38,7 @@ type Entry struct {
 	FoundOnX          bool      `json:"found_on_x,omitempty"` // found on X, possibly our own earlier attempt
 	Attempts          int       `json:"attempts,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`
-	Format            string    `json:"format,omitempty"` // video_captions, video, image or text; empty in legacy state
+	Format            string    `json:"format,omitempty"` // a Format constant; empty in legacy state
 	FallbackReason    string    `json:"fallback_reason,omitempty"`
 	PublishedAt       time.Time `json:"published_at,omitzero"`
 	NextAttemptAt     time.Time `json:"next_attempt_at,omitzero"`
@@ -63,10 +71,8 @@ func Load(path string) (*Store, error) {
 	}
 	s.exists = true
 	for guid := range s.Items {
-		switch s.Items[guid].Format {
-		case "", "video_captions", "video", "image", "text":
-		default:
-			return nil, fmt.Errorf("state entry %q has unknown format %q", guid, s.Items[guid].Format)
+		if format := s.Items[guid].Format; !validFormat(format) {
+			return nil, fmt.Errorf("state entry %q has unknown format %q", guid, format)
 		}
 		if status := s.Items[guid].Status; !validStatus(status) {
 			return nil, fmt.Errorf("state entry %q has unknown status %q", guid, status)
@@ -78,6 +84,15 @@ func Load(path string) (*Store, error) {
 func validStatus(status string) bool {
 	switch status {
 	case StatusSeeded, StatusPosting, StatusPosted, StatusRetry, StatusUncertain, StatusMissed, StatusFailedTerminal:
+		return true
+	default:
+		return false
+	}
+}
+
+func validFormat(format string) bool {
+	switch format {
+	case "", FormatVideoCaptions, FormatVideo, FormatImage, FormatText:
 		return true
 	default:
 		return false

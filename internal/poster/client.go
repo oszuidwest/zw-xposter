@@ -29,6 +29,13 @@ func LookbackHours(d time.Duration) int {
 	return int(math.Ceil(d.Hours()))
 }
 
+// Poster contract values shared with poster/server.mjs.
+const (
+	StageVideo   = "video"
+	StageImage   = "image"
+	CaptionsNone = "none"
+)
+
 // Client calls the poster HTTP API.
 type Client struct {
 	baseURL string
@@ -62,12 +69,10 @@ type Result struct {
 
 // PostError is a poster failure. Clicked is true unless a pre-click failure is confirmed.
 type PostError struct {
-	Status         string
-	Message        string
-	Clicked        bool
-	Stage          string
-	Captions       string
-	FallbackReason string
+	Status  string
+	Message string
+	Clicked bool
+	Stage   string
 }
 
 // Error preserves the poster's message for operational logs.
@@ -92,6 +97,7 @@ func (c *Client) Post(ctx context.Context, text string, img *article.Image) (str
 }
 
 // PostVideo streams an MP4 instead of buffering a base64 copy in JSON.
+// With a *PostError, Result still reports any caption downgrade.
 func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, captions bool) (Result, error) {
 	// NopCloser stops the transport from closing a caller-owned *article.Video.
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post-video", io.NopCloser(video))
@@ -101,7 +107,7 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, ca
 	req.Header.Set("Content-Type", "video/mp4")
 	req.Header.Set("X-Post-Text", base64.StdEncoding.EncodeToString([]byte(text)))
 	if !captions {
-		req.Header.Set("X-Post-Captions", "none")
+		req.Header.Set("X-Post-Captions", CaptionsNone)
 	}
 	client := *c.http
 	// Receipt has 5 minutes; the poster bounds queueing and all browser work to 24.
@@ -131,13 +137,11 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error
 		if strings.TrimSpace(out.Error) == "" {
 			return Result{}, fmt.Errorf("poster returned %s without an error description", resp.Status)
 		}
-		return Result{}, &PostError{
-			Status:         resp.Status,
-			Message:        out.Error,
-			Clicked:        out.Clicked == nil || *out.Clicked,
-			Stage:          out.Stage,
-			Captions:       out.Captions,
-			FallbackReason: out.FallbackReason,
+		return Result{Captions: out.Captions, FallbackReason: out.FallbackReason}, &PostError{
+			Status:  resp.Status,
+			Message: out.Error,
+			Clicked: out.Clicked == nil || *out.Clicked,
+			Stage:   out.Stage,
 		}
 	}
 	if strings.TrimSpace(out.URL) == "" {

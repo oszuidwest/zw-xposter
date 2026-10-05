@@ -12,6 +12,21 @@ const transcript = (content = srt, base64 = false) => JSON.stringify({
   additional_formats: [{ requested_format: 'srt', is_base64_encoded: base64, content }],
 });
 
+// Route fetch to a local server that accepts the request but never answers.
+async function stallFetch(t) {
+  const received = Promise.withResolvers();
+  const server = http.createServer(() => received.resolve());
+  t.after(async () => {
+    server.closeAllConnections();
+    await server[Symbol.asyncDispose]();
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  const realFetch = globalThis.fetch;
+  t.mock.method(globalThis, 'fetch', (url, options) => realFetch(`http://127.0.0.1:${server.address().port}`, options));
+  return { received: received.promise };
+}
+
 test('optional captions downgrade failures but preserve caller cancellation', async (t) => {
   await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'optional-subtitles-'));
   const file = path.join(directory.path, 'video.mp4');
@@ -33,18 +48,12 @@ test('optional captions downgrade failures but preserve caller cancellation', as
     assert.equal((await prepareSubtitles(file, { apiKey: 'key' })).captions, 'none');
   });
   for (const caller of [false, true]) await t.test(caller ? 'caller cancellation escapes' : 'dedicated timeout downgrades', async (t) => {
-    const received = Promise.withResolvers();
-    const server = http.createServer(() => received.resolve());
-    t.after(async () => { server.closeAllConnections(); await server[Symbol.asyncDispose](); });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const realFetch = globalThis.fetch;
-    t.mock.method(globalThis, 'fetch', (url, options) => realFetch(`http://127.0.0.1:${server.address().port}`, options));
+    const { received } = await stallFetch(t);
     const controller = new AbortController();
     const result = prepareSubtitles(file, { apiKey: 'key', signal: controller.signal, timeoutMs: caller ? 5000 : 50 });
     if (caller) {
       const rejected = assert.rejects(result, { name: 'AbortError' });
-      await received.promise;
+      await received;
       controller.abort();
       await rejected;
     } else {
@@ -101,21 +110,12 @@ test('generates subtitles and rejects unusable transcripts', async (t) => {
   }
 
   await t.test('cancels an in-flight transcription', { timeout: 5000 }, async (t) => {
-    const received = Promise.withResolvers();
-    const server = http.createServer(() => received.resolve());
-    t.after(async () => {
-      server.closeAllConnections();
-      await server[Symbol.asyncDispose]();
-    });
-    server.listen(0, '127.0.0.1');
-    await once(server, 'listening');
-    const realFetch = globalThis.fetch;
-    t.mock.method(globalThis, 'fetch', (url, options) => realFetch(`http://127.0.0.1:${server.address().port}`, options));
+    const { received } = await stallFetch(t);
     const controller = new AbortController();
     const rejected = assert.rejects(generateSubtitles(file, {
       apiKey: 'test-key', signal: AbortSignal.any([controller.signal, t.signal]),
     }), { name: 'AbortError' });
-    await received.promise;
+    await received;
     controller.abort();
     await rejected;
   });

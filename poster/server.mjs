@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
-import { MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
+import { CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
 import { prepareSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
@@ -362,12 +362,11 @@ async function runSessionChecks() {
 // Abandon disconnected requests before the click; no client remains to record the outcome.
 // videoFile is server-owned; request payloads must never supply local paths.
 async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFile) {
-  const throwIfGone = () => {
-    signal.throwIfAborted();
-  };
+  const throwIfGone = () => signal.throwIfAborted();
   // The request may have waited in the queue behind other browser work.
   throwIfGone();
-  const caption = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
+  // srt stays local; only the caption outcome is reported.
+  let { srt, ...caption } = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
   if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
   throwIfGone();
   let page;
@@ -425,20 +424,19 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
       if (videoFile) {
         await mediaOperation('video', () => uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone }));
         await acknowledgeNotice(page);
-        if (caption.srt) {
+        if (srt) {
           try {
-            await uploadSubtitles(page, dialog, caption.srt, { throwIfCancelled: throwIfGone });
+            await uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone });
           } catch (err) {
             throwIfGone();
             if (page.isClosed() || err.stage === 'session' || err.stage === 'service') throw err;
             caption.captions = 'none';
             caption.fallbackReason = `caption attachment: ${err.message}`;
             log('video without captions:', caption.fallbackReason);
-            delete caption.srt;
+            srt = undefined;
             await resetComposer();
             continue; // One clean re-upload; no repeated transcription or caption attempt.
           }
-          delete caption.srt;
         }
       } else if (image) {
         await pause(800, 2000);
@@ -457,7 +455,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         throw new Error('composer media state changed before publication');
       }
       if (videoFile) {
-        const attached = await dialog.getByText(new RegExp(xUI.captionAttachedPattern, 'i')).isVisible();
+        const attached = await dialog.getByText(CAPTION_ATTACHED).isVisible();
         if (attached !== (caption.captions === 'attached')) throw new Error('composer caption state changed before publication');
       }
 
@@ -487,10 +485,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     throw new Error('composer recovery exhausted');
   } catch (cause) {
     // AbortSignal throws a DOMException with a read-only message.
-    const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage });
-    err.clicked = clicked;
-    Object.assign(err, caption);
-    delete err.srt;
+    const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
     if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
     // A post-click failure requires reconciliation before retrying.
     if (clicked) err.message += ' (after clicking post; it may be on X)';

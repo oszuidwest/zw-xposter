@@ -15,7 +15,7 @@ const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
 const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
 const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
-const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
+export const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -64,10 +64,7 @@ function uploadCommand(url, request) {
   return form ? new URLSearchParams(request.postData() || '').get('command') : null;
 }
 
-// X's preview can precede encoding; require confirmed processing success.
-export function uploadVideo(page, dialog, file, options) {
-  return uploadMedia(page, dialog, file, options);
-}
+export const uploadVideo = uploadMedia;
 
 export function uploadImage(page, dialog, image, options) {
   return uploadMedia(page, dialog, {
@@ -75,6 +72,7 @@ export function uploadImage(page, dialog, image, options) {
   }, { timeoutMs: 60_000, ...options, kind: 'image' });
 }
 
+// X's preview can precede encoding; require confirmed processing success.
 async function uploadMedia(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},
@@ -106,7 +104,7 @@ async function uploadMedia(page, dialog, file, {
     if (info?.state === 'failed') {
       throw new Error(`${kind} processing failed: ${JSON.stringify(info.error || info)}`);
     }
-    // FINALIZE without processing_info means synchronous completion.
+    // Without processing_info, chunked uploads complete at FINALIZE and simple image uploads in their only response.
     const command = uploadCommand(url, res.request());
     return info?.state === 'succeeded' || Boolean(id && !info && (command === 'FINALIZE' || (kind === 'image' && !command)));
   }, { timeout: timeoutMs, signal: release.signal });
