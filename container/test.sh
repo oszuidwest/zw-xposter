@@ -96,15 +96,15 @@ for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
     try { args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); } catch { continue; }
     const role = args[0] === '/app/orchestrator' ? 'orchestrator'
         : args[1] === '/app/poster/server.mjs' ? 'node'
-        : args[0] === 'Xvfb' ? 'Xvfb' : null;
+        : args[0] === 'Xvfb' ? 'Xvfb' : args[0]?.endsWith('/chrome') ? 'chromium' : null;
     if (!role) continue;
     assert.match(fs.readFileSync(`/proc/${pid}/status`, 'utf8'), /Uid:\s+1000\s+1000/);
     const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
     assert.ok(!env.some(value => value.startsWith(role === 'orchestrator' ? 'X_AUTH_TOKEN=' : 'GRAPH_CLIENT_SECRET=')));
-    if (role !== 'node') assert.ok(!env.some(value => value.startsWith('ELEVENLABS_API_KEY=')));
+    assert.equal(env.some(value => value.startsWith('ELEVENLABS_API_KEY=')), role === 'node');
     pids[role] = Number(pid);
 }
-assert.deepEqual(Object.keys(pids).sort(), ['Xvfb', 'node', 'orchestrator']);
+assert.deepEqual(Object.keys(pids).sort(), ['Xvfb', 'chromium', 'node', 'orchestrator']);
 if (target !== 'stop') process.kill(pids[target], 'SIGKILL');
 JS
     if [[ $target == stop ]]; then

@@ -112,6 +112,7 @@ export async function launch() {
   await writeLanguagePreference();
 
   context = await chromium.launchPersistentContext(PROFILE_DIR, {
+    env: { ...process.env, ELEVENLABS_API_KEY: undefined },
     // Use full Chromium with its native user agent, client hints and platform.
     channel: 'chromium',
     headless: HEADLESS,
