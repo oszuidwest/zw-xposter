@@ -20,7 +20,13 @@ Defaults: poll every two minutes; skip articles older than 24 hours.
 
 Videos require MP4 RSS enclosures (up to 512 MiB, 0.5 seconds–20 minutes). Add CDN and redirect hosts to `ALLOWED_HOSTS`.
 
-Set `ELEVENLABS_API_KEY` with **Speech to Text** permission for video posts. Videos are sent to ElevenLabs for Dutch subtitles (paid usage). Video or subtitle failures are retried without falling back to images.
+Publication tries **video with Dutch captions → video without captions → article image (`og:image`) → text with article link**. Only the feed's selected video enclosure is used. Media failures, including temporary download/upload failures and unsupported or empty videos, immediately advance the chain: timely publication takes priority over richer media. A successful fallback is final.
+
+`ELEVENLABS_API_KEY` is optional. With a key that has **Speech to Text** permission, videos are sent to ElevenLabs for Dutch subtitles (paid usage). Without a key, videos publish without captions. Transcription errors, empty/invalid captions and caption attachment failures also permit uncaptioned video. Caption attachment recovery uses one clean composer and at most one video re-upload, without repeating transcription. Queueing, transcription, recovery and browser work share a 24-minute budget after at most five minutes receiving the video, within the client's 30-minute request. Later image/text requests have separate five-minute client budgets.
+
+Login, account, general browser failures and unconfirmed outcomes keep the existing retry/reconciliation behavior. Only confirmed media failures before clicking Post permit fallback; unknown or lost responses never do. The selected format and fallback reason are saved before advancing, so retries and restarts resume at that level after checking X for duplicates. Retries still at the captioned-video level may transcribe again and incur charges; once downgraded to uncaptioned video, they skip ElevenLabs. Logs report each fallback and the confirmed format; state keeps the fallback reason separately from the latest operational error.
+
+`DRY_RUN=true` performs local download/preparation checks and logs the predicted format, including image/text fallback for unusable videos. Caption, upload and browser outcomes remain **unverified** (the orchestrator does not receive the API key). It makes no publication or paid transcription requests, persistent state writes, alerts or heartbeats.
 
 ## Operations
 

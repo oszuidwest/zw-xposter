@@ -6,7 +6,7 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { setTimeout as sleep } from 'node:timers/promises';
 import test from 'node:test';
-import { MAX_VIDEO_BYTES, receiveVideo, uploadVideo, videoPostText } from './media.mjs';
+import { MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadVideo, videoPostText } from './media.mjs';
 
 test('video text preserves Unicode and rejects invalid headers', () => {
   const text = 'Nieuws: café 🎥 https://example.nl/';
@@ -31,9 +31,12 @@ test('binary video storage is bounded and cleans up success and failure', async 
     await assert.rejects(receiveVideo(source, { maxBytes: 6, tempDir }));
     assert.deepEqual(await readdir(tempDir), []);
   }
+  const stalled = Readable.from((async function* () { await sleep(50); yield Buffer.from('video'); })());
+  await assert.rejects(receiveVideo(stalled, { tempDir, timeoutMs: 10 }), { stage: 'video' });
+  assert.deepEqual(await readdir(tempDir), []);
 });
 
-function uploadFixture({ selectError } = {}) {
+function uploadFixture({ selectError, image = false } = {}) {
   const page = new EventEmitter();
   // Like Playwright: settle on a truthy or throwing predicate, timeout or abort, then stop listening.
   page.waitForResponse = (predicate, { timeout, signal }) => Promise.race([
@@ -51,12 +54,13 @@ function uploadFixture({ selectError } = {}) {
       return { first: () => ({
         async setInputFiles(file) {
           assert.equal(selector, 'input[data-testid="fileInput"]');
-          assert.equal(file, '/tmp/fixture.mp4');
+          if (image) assert.equal(file.buffer.toString(), 'image');
+          else assert.equal(file, '/tmp/fixture.mp4');
           selected.resolve();
           if (selectError) throw selectError;
         },
         async waitFor() {
-          assert.equal(selector, '[data-testid="attachments"] video');
+          assert.equal(selector, `[data-testid="attachments"] ${image ? 'img' : 'video'}`);
           previews++;
         },
       }) };
@@ -93,6 +97,27 @@ test('video upload waits for processing success, ignoring previews and other med
   await upload;
   assert.equal(f.previews(), 1);
   assert.equal(f.page.listenerCount('response'), 0);
+});
+
+test('image uploads require server confirmation, not just a preview', async () => {
+  const f = uploadFixture({ image: true });
+  const upload = uploadImage(f.page, f.dialog, { mime: 'image/png', data: Buffer.from('image').toString('base64') });
+  await f.selected;
+  assert.equal(f.previews(), 0);
+  f.emit({ media_id_string: 'image-123' }, { command: '' });
+  await upload;
+  assert.equal(f.previews(), 1);
+});
+
+test('account and unknown API errors preserve their non-media classification', async (t) => {
+  for (const status of [401, 403, 200]) await t.test(`HTTP ${status}`, async () => {
+    const f = uploadFixture();
+    const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4');
+    const rejected = assert.rejects(upload, { stage: status === 200 ? 'service' : 'session' });
+    await f.selected;
+    f.emit({ errors: [{ code: 326, message: 'account restricted' }] }, { status });
+    await rejected;
+  });
 });
 
 test('synchronous FINALIZE succeeds without processing_info', async (t) => {

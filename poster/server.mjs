@@ -15,8 +15,8 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
-import { MAX_VIDEO_BYTES, receiveVideo, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
-import { generateSubtitles } from './subtitles.mjs';
+import { CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
+import { prepareSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
   sessionHealth,
@@ -362,84 +362,146 @@ async function runSessionChecks() {
 
 // Abandon disconnected requests before the click; no client remains to record the outcome.
 // videoFile is server-owned; request payloads must never supply local paths.
-async function createPost({ text, image, dryRun }, signal, videoFile) {
-  const throwIfGone = () => {
-    if (signal.aborted) throw new Error('client disconnected before clicking post');
-  };
+async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFile) {
+  const throwIfGone = () => signal.throwIfAborted();
   // The request may have waited in the queue behind other browser work.
   throwIfGone();
-  if (videoFile) log('generating Dutch subtitles');
-  const subtitles = videoFile ? await generateSubtitles(videoFile, { signal }) : undefined;
+  // srt stays local; only the caption outcome is reported.
+  let { srt, ...caption } = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
+  if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
   throwIfGone();
-  const page = await getTab();
+  let page;
   let clicked = false;
+  let cancelledPage;
+  const closeOnCancel = () => { cancelledPage = page.close().catch(() => {}); };
+  // Navigation destroys failed attachments and caption dialogs. Verify the new page
+  // before allowing either an internal retry or a media-classified error response.
+  const resetComposer = async () => {
+    throwIfGone();
+    await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
+    await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
+    if (await page.locator('[role="dialog"]:visible, [data-testid="attachments"] img, [data-testid="attachments"] video').count()) {
+      throw new Error('composer recovery could not be verified');
+    }
+    throwIfGone();
+  };
+  const mediaOperation = async (stage, operation) => {
+    throwIfGone();
+    try {
+      await operation();
+      throwIfGone();
+    } catch (err) {
+      throwIfGone();
+      // Closed browsers and explicitly identified session failures are not media failures.
+      if (!page.isClosed() && !err.stage) err.stage = stage;
+      throw err;
+    }
+  };
   try {
+    page = await getTab();
+    throwIfGone();
+    signal.addEventListener('abort', closeOnCancel, { once: true });
     await ensureLoggedIn(page);
-    // Vary the pause and scroll before opening the composer.
-    await pause(2000, 5000);
-    if (Math.random() < 0.6) {
-      await page.mouse.wheel(0, random(200, 700));
-      await pause(1000, 3000);
-    }
+    for (let attempt = 0; attempt < 2; attempt++) {
+      throwIfGone();
+      // Vary the pause and scroll before opening the composer.
+      await pause(2000, 5000);
+      if (Math.random() < 0.6) {
+        await page.mouse.wheel(0, random(200, 700));
+        await pause(1000, 3000);
+      }
 
-    await humanClick(page, page.locator('[data-testid="SideNav_NewTweet_Button"]'));
-    const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
-    const box = dialog.locator('[data-testid="tweetTextarea_0"]').first();
-    await box.waitFor();
-    await pause(500, 1500);
-    await humanClick(page, box);
-    await humanType(page, text);
+      await humanClick(page, page.locator('[data-testid="SideNav_NewTweet_Button"]'));
+      const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
+      const box = dialog.locator('[data-testid="tweetTextarea_0"]').first();
+      await box.waitFor();
+      if (await dialog.locator('[data-testid="attachments"] img, [data-testid="attachments"] video').count()) {
+        throw new Error('new composer contains stale media');
+      }
+      await pause(500, 1500);
+      await humanClick(page, box);
+      await humanType(page, text);
 
-    if (videoFile) {
-      await uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone });
+      if (videoFile) {
+        await mediaOperation('video', () => uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone }));
+        await acknowledgeNotice(page);
+        if (srt) {
+          try {
+            await uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone });
+          } catch (err) {
+            throwIfGone();
+            if (page.isClosed() || err.stage === 'session' || err.stage === 'service') throw err;
+            caption.captions = 'none';
+            caption.fallbackReason = `caption attachment: ${err.message}`;
+            log('video without captions:', caption.fallbackReason);
+            srt = undefined;
+            await resetComposer();
+            continue; // One clean re-upload; no repeated transcription or caption attempt.
+          }
+        }
+      } else if (image) {
+        await pause(800, 2000);
+        await mediaOperation('image', () => uploadImage(page, dialog, image, { throwIfCancelled: throwIfGone }));
+      }
+
+      const button = dialog.locator('[data-testid="tweetButton"]');
+      await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
+      // Let the composer settle before clicking or capturing a dry run.
+      await pause(1500, 4000);
       await acknowledgeNotice(page);
-      await uploadSubtitles(page, dialog, subtitles, { throwIfCancelled: throwIfGone });
-    } else if (image) {
-      await pause(800, 2000);
-      await dialog.locator('input[data-testid="fileInput"]').first().setInputFiles({
-        name: image.name || 'image',
-        mimeType: image.mime,
-        buffer: Buffer.from(image.data, 'base64'),
+      throwIfGone();
+      const videos = await dialog.locator('[data-testid="attachments"] video').count();
+      const images = await dialog.locator('[data-testid="attachments"] img').count();
+      if (videos !== (videoFile ? 1 : 0) || images !== (image ? 1 : 0)) {
+        throw new Error('composer media state changed before publication');
+      }
+      if (videoFile) {
+        const attached = await dialog.getByText(CAPTION_ATTACHED).isVisible();
+        if (attached !== (caption.captions === 'attached')) throw new Error('composer caption state changed before publication');
+      }
+
+      if (dryRun) {
+        const file = await screenshot(page, 'dry-run');
+        await page.keyboard.press('Escape');
+        // "Save post?" sheet: confirm saves a draft, cancel discards.
+        await humanClick(page, page.locator('[data-testid="confirmationSheetCancel"]'));
+        await dialog.waitFor({ state: 'detached', timeout: 15_000 });
+        return { dryRun: true, screenshot: file };
+      }
+
+      const response = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/CreateTweet'), { timeout: 60_000 });
+      // Not awaited when the click fails; an unhandled rejection would crash the process.
+      response.catch(() => {});
+      await humanClick(page, button, {
+        throwIfCancelled: throwIfGone,
+        onPress: () => {
+          clicked = true;
+        },
       });
-      await dialog.locator('[data-testid="attachments"] img').first().waitFor({ timeout: 60_000 });
+      const body = await (await response).json();
+      const result = parseCreateTweetResponse(body, USERNAME);
+      await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
+      return { ...result, ...caption };
     }
-
-    const button = dialog.locator('[data-testid="tweetButton"]');
-    await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-    // Let the composer settle before clicking or capturing a dry run.
-    await pause(1500, 4000);
-    await acknowledgeNotice(page);
-
-    if (dryRun) {
-      const file = await screenshot(page, 'dry-run');
-      await page.keyboard.press('Escape');
-      // "Save post?" sheet: confirm saves a draft, cancel discards.
-      await humanClick(page, page.locator('[data-testid="confirmationSheetCancel"]'));
-      await dialog.waitFor({ state: 'detached', timeout: 15_000 });
-      return { dryRun: true, screenshot: file };
-    }
-
-    const response = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/CreateTweet'), { timeout: 60_000 });
-    // Not awaited when the click fails; an unhandled rejection would crash the process.
-    response.catch(() => {});
-    await humanClick(page, button, {
-      throwIfCancelled: throwIfGone,
-      onPress: () => {
-        clicked = true;
-      },
-    });
-    const body = await (await response).json();
-    const result = parseCreateTweetResponse(body, USERNAME);
-    await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
-    return result;
-  } catch (err) {
-    err.clicked = clicked;
-    err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
+    throw new Error('composer recovery exhausted');
+  } catch (cause) {
+    // AbortSignal throws a DOMException with a read-only message.
+    const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
+    if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
     // A post-click failure requires reconciliation before retrying.
     if (clicked) err.message += ' (after clicking post; it may be on X)';
     // Leave no half-written composer behind for the next post.
-    await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' }).catch(() => {});
+    try {
+      await resetComposer();
+    } catch (recovery) {
+      err.stage = 'service';
+      err.message += ` (recovery failed: ${recovery.message})`;
+    }
     throw err;
+  } finally {
+    signal.removeEventListener('abort', closeOnCancel);
+    // Do not release the browser queue while cancellation is still closing the tab.
+    await cancelledPage;
   }
 }
 
@@ -499,7 +561,10 @@ async function postAndSend(res, post, videoFile) {
   if (res.destroyed) controller.abort();
   else res.once('close', () => controller.abort());
   // Transcribe inside the queue so posts keep their request order.
-  const result = await exclusive(() => createPost(post, controller.signal, videoFile));
+  // Receipt has its own 5-minute limit; keep queue, transcription, at most two
+  // uploads and confirmation inside the client's 30-minute video request budget.
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(videoFile ? 24 * 60_000 : 4 * 60_000)]);
+  const result = await exclusive(() => createPost(post, signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
 }
@@ -549,12 +614,13 @@ export const server = http.createServer(async (req, res) => {
         if (req.headers['content-type'] !== 'video/mp4') throw new Error('video/mp4 is required');
         if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
         text = videoPostText(req.headers['x-post-text']);
+        if (req.headers['x-post-captions'] && req.headers['x-post-captions'] !== 'none') throw new Error('X-Post-Captions must be none or absent');
       } catch (err) {
         return send(res, 400, postErrorResponse(err));
       }
       const video = await receiveVideo(req);
       try {
-        return await postAndSend(res, { text }, video.file);
+        return await postAndSend(res, { text, skipCaptions: req.headers['x-post-captions'] === 'none' }, video.file);
       } finally {
         await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
       }

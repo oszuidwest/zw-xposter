@@ -31,7 +31,9 @@ type pollTestOptions struct {
 	published time.Time
 	initial   state.Entry
 	// extra are additional feed items; their Link is a path on the test server.
-	extra   []feed.Item
+	extra []feed.Item
+	// video gives the article a featured video at /video.mp4 on the content server.
+	video   bool
 	recent  func(http.ResponseWriter, *http.Request, feed.Item)
 	post    func(http.ResponseWriter, *http.Request, feed.Item)
 	content http.HandlerFunc
@@ -115,6 +117,9 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 	}
 	fixture.item = item
 	fixture.items = []feed.Item{item}
+	if opts.video {
+		fixture.items[0].VideoURL = server.URL + "/video.mp4"
+	}
 	for _, extra := range opts.extra {
 		extra.Link = server.URL + extra.Link
 		fixture.items = append(fixture.items, extra)
@@ -369,7 +374,7 @@ func TestPollCancellationDuringPostBecomesUncertain(t *testing.T) {
 }
 
 func TestPollDoesNotPostWhenWriteAheadSaveFails(t *testing.T) {
-	fixture := newPollTest(t, &pollTestOptions{})
+	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusRetry, Format: "text"}})
 	blockStateSave(t, fixture.app.cfg.StateFile)
 
 	fixture.assertPollFailsUnchanged("write-ahead", 1)

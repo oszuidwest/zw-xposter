@@ -220,5 +220,9 @@ export function parseCreateTweetResponse(body, username) {
 
 // Preserve the error and click state so the orchestrator can reconcile uncertain outcomes.
 export function postErrorResponse(error) {
-  return { error: error.message, clicked: Boolean(error.clicked) };
+  return {
+    error: error.message, clicked: Boolean(error.clicked), stage: error.stage || 'service',
+    ...(error.captions && { captions: error.captions }),
+    ...(error.fallbackReason && { fallbackReason: error.fallbackReason }),
+  };
 }

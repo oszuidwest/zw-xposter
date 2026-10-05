@@ -15,7 +15,7 @@ const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
 const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
 const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
 const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
-const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
+export const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -26,25 +26,27 @@ export function videoPostText(encoded) {
   return text;
 }
 
-export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir = os.tmpdir() } = {}) {
+export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir = os.tmpdir(), timeoutMs = VIDEO_RECEIVE_TIMEOUT_MS } = {}) {
   const directory = await mkdtemp(path.join(tempDir, 'xposter-upload-'));
   const file = path.join(directory, 'video.mp4');
   const cleanup = () => rm(directory, { recursive: true, force: true });
   let size = 0;
+  const timeout = AbortSignal.timeout(timeoutMs);
   const limit = new Transform({
     transform(chunk, encoding, callback) {
       size += chunk.length;
-      callback(size > maxBytes ? new Error(`video exceeds ${maxBytes} bytes`) : null, chunk);
+      callback(size > maxBytes ? Object.assign(new Error(`video exceeds ${maxBytes} bytes`), { stage: 'video' }) : null, chunk);
     },
   });
   try {
     await pipeline(source, limit, createWriteStream(file, { mode: 0o600, flags: 'wx' }), {
-      signal: AbortSignal.timeout(VIDEO_RECEIVE_TIMEOUT_MS),
+      signal: timeout,
     });
-    if (!size) throw new Error('video is empty');
+    if (!size) throw Object.assign(new Error('video is empty'), { stage: 'video' });
     return { file, cleanup };
   } catch (err) {
     await cleanup();
+    if (timeout.aborted) err.stage = 'video';
     throw err;
   }
 }
@@ -62,10 +64,19 @@ function uploadCommand(url, request) {
   return form ? new URLSearchParams(request.postData() || '').get('command') : null;
 }
 
+export const uploadVideo = uploadMedia;
+
+export function uploadImage(page, dialog, image, options) {
+  return uploadMedia(page, dialog, {
+    name: image.name || 'image', mimeType: image.mime, buffer: Buffer.from(image.data, 'base64'),
+  }, { timeoutMs: 60_000, ...options, kind: 'image' });
+}
+
 // X's preview can precede encoding; require confirmed processing success.
-export async function uploadVideo(page, dialog, file, {
+async function uploadMedia(page, dialog, file, {
   timeoutMs = VIDEO_UPLOAD_TIMEOUT_MS,
   throwIfCancelled = () => {},
+  kind = 'video',
 } = {}) {
   throwIfCancelled();
   let mediaID;
@@ -74,21 +85,28 @@ export async function uploadVideo(page, dialog, file, {
   const ready = page.waitForResponse(async (res) => {
     const url = new URL(res.url());
     if (!isMediaUpload(url)) return false;
-    if (!res.ok()) throw new Error(`video upload returned HTTP ${res.status()}`);
+    if (!res.ok()) {
+      const error = new Error(`${kind} upload returned HTTP ${res.status()}`);
+      // Authentication/account restrictions must retain the current format.
+      if ([401, 403].includes(res.status())) error.stage = 'session';
+      throw error;
+    }
     if (res.status() === 204) return false; // APPEND acknowledgements have no JSON.
     const body = await res.json();
     if (body.errors?.length || body.error) {
-      throw new Error(`video upload rejected: ${JSON.stringify(body.errors || body.error)}`);
+      // Unknown API errors may reflect account restrictions, not unusable media.
+      throw Object.assign(new Error(`${kind} upload rejected: ${JSON.stringify(body.errors || body.error)}`), { stage: 'service' });
     }
     const id = body.media_id_string;
     mediaID ||= id;
     if (id && id !== mediaID) return false;
     const info = body.processing_info;
     if (info?.state === 'failed') {
-      throw new Error(`video processing failed: ${JSON.stringify(info.error || info)}`);
+      throw new Error(`${kind} processing failed: ${JSON.stringify(info.error || info)}`);
     }
-    // FINALIZE without processing_info means synchronous completion.
-    return info?.state === 'succeeded' || Boolean(id && !info && uploadCommand(url, res.request()) === 'FINALIZE');
+    // Without processing_info, chunked uploads complete at FINALIZE and simple image uploads in their only response.
+    const command = uploadCommand(url, res.request());
+    return info?.state === 'succeeded' || Boolean(id && !info && (command === 'FINALIZE' || (kind === 'image' && !command)));
   }, { timeout: timeoutMs, signal: release.signal });
   try {
     // An upload can fail while setInputFiles is still pending.
@@ -97,7 +115,7 @@ export async function uploadVideo(page, dialog, file, {
       ready,
     ]);
     throwIfCancelled();
-    await dialog.locator('[data-testid="attachments"] video').first().waitFor({ timeout: 30_000 });
+    await dialog.locator(`[data-testid="attachments"] ${kind === 'video' ? 'video' : 'img'}`).first().waitFor({ timeout: 30_000 });
   } finally {
     release.abort();
   }

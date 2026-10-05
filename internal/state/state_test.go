@@ -76,6 +76,7 @@ func TestLoadRejectsUnknownStatus(t *testing.T) {
 		name, entry, want string
 	}{
 		{name: "unknown", entry: `{"status":"mystery"}`, want: `"mystery"`},
+		{name: "unknown format", entry: `{"status":"retry","format":"mystery"}`, want: `"mystery"`},
 		{name: "null", entry: `null`, want: `""`},
 	}
 	for _, tt := range tests {

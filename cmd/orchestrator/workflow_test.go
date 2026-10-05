@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -46,32 +47,46 @@ func TestPollVideoTakesPriority(t *testing.T) {
 	}{
 		{name: "video replaces image", wantStatus: state.StatusPosted, wantPosts: 1},
 		{name: "dry run never posts", dryRun: true, wantStatus: state.StatusPosted},
-		{name: "download failure retries without image", download: unavailable, wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "503"},
-		{name: "interrupted download retries", download: interrupted, wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "unexpected EOF"},
-		{name: "unsupported type fails at once", download: quicktime, wantStatus: state.StatusFailedTerminal, wantError: "only video/mp4 is supported"},
-		{name: "oversize video fails at once", download: oversize, wantStatus: state.StatusFailedTerminal, wantError: "exceeds"},
-		{name: "video longer than X allows fails at once", download: tooLong, wantStatus: state.StatusFailedTerminal, wantError: "duration 21m0s is outside"},
-		{name: "dry run reports an unsupported video", dryRun: true, download: quicktime, wantStatus: state.StatusFailedTerminal, wantError: "only video/mp4 is supported"},
+		{name: "download failure uses image", download: unavailable, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "503"},
+		{name: "interrupted download uses image", download: interrupted, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "unexpected EOF"},
+		{name: "unsupported type uses image", download: quicktime, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "only video/mp4 is supported"},
+		{name: "oversize video uses image", download: oversize, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "exceeds"},
+		{name: "long video uses image", download: tooLong, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "duration 21m0s is outside"},
+		{name: "dry run prepares image for unsupported video", dryRun: true, download: quicktime, wantStatus: state.StatusPosted, wantError: "only video/mp4 is supported"},
+		{name: "empty video uses image", download: func(w http.ResponseWriter) { w.Header().Set("Content-Type", "video/mp4") }, wantStatus: state.StatusPosted, wantPosts: 1, wantError: "empty"},
 		{name: "upload failure retries", postError: `{"error":"encoding failed","clicked":false}`, wantStatus: state.StatusRetry, wantPosts: 1, wantBackoff: retryInitial},
 		{name: "post-click failure reconciles", postError: `{"error":"confirmation missing","clicked":true}`, wantStatus: state.StatusUncertain, wantPosts: 1, wantBackoff: uncertainMinimum},
 		{name: "missing click state reconciles", postError: `{"error":"outcome unknown"}`, wantStatus: state.StatusUncertain, wantPosts: 1, wantBackoff: uncertainMinimum},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
+			downloadDir := t.TempDir()
+			t.Setenv("TMPDIR", downloadDir)
 			var contentCalls int
 			fixture := newPollTest(t, &pollTestOptions{
+				video: true,
 				content: func(w http.ResponseWriter, r *http.Request) {
 					contentCalls++
-					if r.URL.Path != "/video.mp4" {
-						t.Errorf("video article fetched image/page: %s", r.URL.Path)
-					}
-					if tt.download != nil {
+					if tt.download != nil && r.URL.Path == "/video.mp4" {
 						tt.download(w)
 						return
 					}
-					w.Header().Set("Content-Type", "video/mp4")
-					_, _ = w.Write(mp4)
+					fallbackContent(w, r)
 				},
 				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
+					if tt.download != nil {
+						testutil.Equal(t, r.URL.Path, "/post")
+						var payload struct {
+							Text  string
+							Image *struct{ Data string }
+						}
+						testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+						testutil.Equal(t, payload.Text, postText(&item))
+						if payload.Image == nil {
+							t.Error("fallback image missing")
+						}
+						testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/image"})
+						return
+					}
 					testutil.Equal(t, r.URL.Path, "/post-video")
 					testutil.Equal(t, r.Header.Get("Content-Type"), "video/mp4")
 					text, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Post-Text"))
@@ -85,32 +100,37 @@ func TestPollVideoTakesPriority(t *testing.T) {
 						_, _ = io.WriteString(w, tt.postError)
 						return
 					}
-					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/video"})
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/status/video", "captions": "attached"})
 				},
 			})
-			fixture.items[0].VideoURL = strings.TrimSuffix(fixture.item.Link, "/article") + "/video.mp4"
 			fixture.app.cfg.DryRun = tt.dryRun
 			before := fixture.app.store.Items[fixture.item.GUID]
 			entry := fixture.poll()
+			remaining, err := filepath.Glob(filepath.Join(downloadDir, "xposter-video-*"))
+			testutil.NoError(t, err)
+			testutil.Equal(t, len(remaining), 0)
 			testutil.Equal(t, entry.Status, tt.wantStatus)
 			fixture.assertCalls(1, tt.wantPosts)
-			testutil.Equal(t, contentCalls, 1)
+			wantContent := 1
+			if tt.download != nil {
+				wantContent = 3
+				testutil.Equal(t, entry.Format, "image")
+			}
+			testutil.Equal(t, contentCalls, wantContent)
 			if tt.wantBackoff > 0 {
 				testutil.Equal(t, entry.Attempts, 1)
 				testutil.Equal(t, entry.NextAttemptAt, testNow.Add(tt.wantBackoff))
 			}
-			if tt.wantError != "" && !strings.Contains(entry.LastError, tt.wantError) {
-				t.Fatalf("last error = %q, want it to contain %q", entry.LastError, tt.wantError)
+			if tt.wantError != "" && !strings.Contains(entry.FallbackReason, tt.wantError) {
+				t.Fatalf("fallback reason = %q, want it to contain %q", entry.FallbackReason, tt.wantError)
 			}
 			_, alerted := workflowAlert(fixture.item.GUID, &before, &entry)
 			testutil.Equal(t, alerted, tt.wantStatus == state.StatusFailedTerminal)
-			if tt.wantStatus == state.StatusFailedTerminal {
-				testutil.Equal(t, entry.Attempts, 0)
-				testutil.Equal(t, entry.NextAttemptAt, time.Time{})
-				// A permanent failure is final: later polls neither download nor post.
+			if tt.wantStatus == state.StatusPosted {
+				// A successful fallback is final, even if richer media becomes available.
 				fixture.poll()
-				fixture.assertCalls(1, 0)
-				testutil.Equal(t, contentCalls, 1)
+				fixture.assertCalls(1, tt.wantPosts)
+				testutil.Equal(t, contentCalls, wantContent)
 			}
 		})
 	}
