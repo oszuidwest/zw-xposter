@@ -16,6 +16,9 @@ const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
 const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
 const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
 export const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
+// Composer attachment previews, by upload kind.
+export const ATTACHMENT = { video: '[data-testid="attachments"] video', image: '[data-testid="attachments"] img' };
+export const ANY_ATTACHMENT = `${ATTACHMENT.image}, ${ATTACHMENT.video}`;
 
 export function videoPostText(encoded) {
   if (typeof encoded !== 'string' || !encoded) throw new Error('X-Post-Text is required');
@@ -115,7 +118,7 @@ async function uploadMedia(page, dialog, file, {
       ready,
     ]);
     throwIfCancelled();
-    await dialog.locator(`[data-testid="attachments"] ${kind === 'video' ? 'video' : 'img'}`).first().waitFor({ timeout: 30_000 });
+    await dialog.locator(ATTACHMENT[kind]).first().waitFor({ timeout: 30_000 });
   } finally {
     release.abort();
   }

@@ -1,0 +1,7 @@
+{
+  "error": "video processing failed: {\"message\":\"Synthetic encoding failure\"}",
+  "clicked": false,
+  "stage": "video",
+  "captions": "none",
+  "fallbackReason": "caption generation: ElevenLabs transcription returned HTTP 503"
+}

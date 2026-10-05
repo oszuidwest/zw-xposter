@@ -515,7 +515,6 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 			result.URL, postErr = a.poster.Post(ctx, text, img)
 		}
 		closeVideo()
-		pe, known := errors.AsType[*poster.PostError](postErr)
 		if video != nil && result.Captions == poster.CaptionsNone {
 			entry.Format = state.FormatVideo
 			if result.FallbackReason != "" {
@@ -528,16 +527,17 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 			log.Info("posted", "post", result.URL, "format", entry.Format, "captions", result.Captions, "fallback_reason", entry.FallbackReason)
 			return result.URL, a.record(item.GUID, entry)
 		}
-		// Only confirmed pre-click failures avoid the uncertain-outcome delay.
 		entry.LastError = postErr.Error()
+		pe, known := errors.AsType[*poster.PostError](postErr)
 		if next := fallbackFormat(entry.Format, pe); next != "" {
-			if err := a.advanceFormat(ctx, item.GUID, entry, next, postErr.Error()); err != nil {
+			if err := a.advanceFormat(ctx, item.GUID, entry, next, entry.LastError); err != nil {
 				return "", err
 			}
 			continue
 		}
 		entry.Status = state.StatusRetry
 		delay := retryDelay(entry.Attempts)
+		// Only confirmed pre-click failures avoid the uncertain-outcome delay.
 		if !known || pe.Clicked {
 			entry.Status = state.StatusUncertain
 			delay = max(delay, uncertainMinimum)
@@ -548,11 +548,12 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 	}
 }
 
-// nextFormat is the fallback chain, one step at a time.
-var nextFormat = map[string]string{
-	state.FormatVideoCaptions: state.FormatImage,
-	state.FormatVideo:         state.FormatImage,
-	state.FormatImage:         state.FormatText,
+// fallbackChain is the fallback chain, one step at a time: next follows a
+// failed download, or a confirmed pre-click poster failure in stage.
+var fallbackChain = map[string]struct{ stage, next string }{
+	state.FormatVideoCaptions: {stage: poster.StageVideo, next: state.FormatImage},
+	state.FormatVideo:         {stage: poster.StageVideo, next: state.FormatImage},
+	state.FormatImage:         {stage: poster.StageImage, next: state.FormatText},
 }
 
 // fallbackFormat requires a confirmed pre-click failure in the selected medium.
@@ -560,13 +561,10 @@ func fallbackFormat(format string, err *poster.PostError) string {
 	if err == nil || err.Clicked {
 		return ""
 	}
-	switch {
-	case (format == state.FormatVideoCaptions || format == state.FormatVideo) && err.Stage == poster.StageVideo,
-		format == state.FormatImage && err.Stage == poster.StageImage:
-		return nextFormat[format]
-	default:
-		return ""
+	if step, ok := fallbackChain[format]; ok && err.Stage == step.stage {
+		return step.next
 	}
+	return ""
 }
 
 // advanceFormat persists a downgrade before any work on the next format.
@@ -615,7 +613,7 @@ func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.En
 		default:
 			return nil, nil, fmt.Errorf("unknown publication format %q", entry.Format)
 		}
-		if err := a.advanceFormat(ctx, item.GUID, entry, nextFormat[entry.Format], err.Error()); err != nil {
+		if err := a.advanceFormat(ctx, item.GUID, entry, fallbackChain[entry.Format].next, err.Error()); err != nil {
 			return nil, nil, err
 		}
 	}

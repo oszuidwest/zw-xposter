@@ -134,9 +134,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   server.listen(0, '127.0.0.1');
   await once(server, 'listening');
   const base = `http://127.0.0.1:${server.address().port}`;
-  const post = (text, signal) => fetch(`${base}/post`, {
-    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text }), signal,
+  const post = (text, signal, image) => fetch(`${base}/post`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, image }), signal,
   });
+  const image = { mime: 'image/png', data: 'aW1hZ2U=' };
   const postVideo = (text, bytes, signal, skipCaptions = false) => fetch(`${base}/post-video`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64'), ...(skipCaptions && { 'x-post-captions': 'none' }) },
@@ -273,10 +274,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   await t.test('image upload failure permits a clean text request', async () => {
     failImage = true;
-    const response = await fetch(`${base}/post`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Image fallback', image: { mime: 'image/png', data: 'aW1hZ2U=' } }),
-    });
+    const response = await post('Image fallback', undefined, image);
     const result = await response.json();
     assert.equal(response.status, 500);
     assert.equal(result.stage, 'image');
@@ -286,10 +284,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   await t.test('image success waits for the upload response', async () => {
-    const response = await fetch(`${base}/post`, {
-      method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ text: 'Image success', image: { mime: 'image/png', data: 'aW1hZ2U=' } }),
-    });
+    const response = await post('Image success', undefined, image);
     assert.equal(response.status, 200);
     assert.match((await response.json()).url, /\/status\//);
   });

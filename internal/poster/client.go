@@ -29,6 +29,9 @@ func LookbackHours(d time.Duration) int {
 	return int(math.Ceil(d.Hours()))
 }
 
+// maxResponseBytes bounds a poster response body.
+const maxResponseBytes = 1 << 20
+
 // Poster contract values shared with poster/server.mjs.
 const (
 	StageVideo   = "video"
@@ -44,7 +47,8 @@ type Client struct {
 
 // New returns a client for the poster at baseURL.
 func New(baseURL string) *Client {
-	// Logging in and uploading media can take a while.
+	// Logging in and uploading media can take a while; the poster gives up after
+	// POST_TIMEOUT_MS so its error response arrives first.
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 5 * time.Minute}}
 }
 
@@ -110,7 +114,8 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, ca
 		req.Header.Set("X-Post-Captions", CaptionsNone)
 	}
 	client := *c.http
-	// Receipt has 5 minutes; the poster bounds queueing and all browser work to 24.
+	// Receipt has 5 minutes; the poster bounds queueing and all browser work to
+	// VIDEO_POST_TIMEOUT_MS (24).
 	client.Timeout = 30 * time.Minute
 	return c.sendPost(req, &client)
 }
@@ -122,11 +127,11 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error
 	}
 	defer func() { _ = resp.Body.Close() }()
 
-	raw, err := io.ReadAll(io.LimitReader(resp.Body, (1<<20)+1))
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, maxResponseBytes+1))
 	if err != nil {
 		return Result{}, err
 	}
-	if len(raw) > 1<<20 {
+	if len(raw) > maxResponseBytes {
 		return Result{}, errors.New("poster response exceeds 1 MiB")
 	}
 	var out response

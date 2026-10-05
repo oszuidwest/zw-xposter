@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
-import { CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
+import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
 import { prepareSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
@@ -55,6 +55,10 @@ const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
 const LOGIN_RETRY_MS = 30 * 60_000;
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
+// Must stay below the client timeouts in internal/poster/client.go (5 and 30 minutes),
+// so the client receives the error. Video receipt has its own 5 minutes before this.
+const POST_TIMEOUT_MS = 4 * 60_000;
+const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
@@ -380,7 +384,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     throwIfGone();
     await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
     await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
-    if (await page.locator('[role="dialog"]:visible, [data-testid="attachments"] img, [data-testid="attachments"] video').count()) {
+    if (await page.locator(`[role="dialog"]:visible, ${ANY_ATTACHMENT}`).count()) {
       throw new Error('composer recovery could not be verified');
     }
     throwIfGone();
@@ -389,13 +393,13 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     throwIfGone();
     try {
       await operation();
-      throwIfGone();
     } catch (err) {
       throwIfGone();
       // Closed browsers and explicitly identified session failures are not media failures.
       if (!page.isClosed() && !err.stage) err.stage = stage;
       throw err;
     }
+    throwIfGone();
   };
   try {
     page = await getTab();
@@ -415,7 +419,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
       const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
       const box = dialog.locator('[data-testid="tweetTextarea_0"]').first();
       await box.waitFor();
-      if (await dialog.locator('[data-testid="attachments"] img, [data-testid="attachments"] video').count()) {
+      if (await dialog.locator(ANY_ATTACHMENT).count()) {
         throw new Error('new composer contains stale media');
       }
       await pause(500, 1500);
@@ -427,10 +431,10 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         await acknowledgeNotice(page);
         if (srt) {
           try {
-            await uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone });
+            await mediaOperation('captions', () => uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone }));
           } catch (err) {
-            throwIfGone();
-            if (page.isClosed() || err.stage === 'session' || err.stage === 'service') throw err;
+            // Only caption failures are consumed here; 'captions' never reaches the client.
+            if (err.stage !== 'captions') throw err;
             caption.captions = 'none';
             caption.fallbackReason = `caption attachment: ${err.message}`;
             log('video without captions:', caption.fallbackReason);
@@ -450,8 +454,8 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
       await pause(1500, 4000);
       await acknowledgeNotice(page);
       throwIfGone();
-      const videos = await dialog.locator('[data-testid="attachments"] video').count();
-      const images = await dialog.locator('[data-testid="attachments"] img').count();
+      const videos = await dialog.locator(ATTACHMENT.video).count();
+      const images = await dialog.locator(ATTACHMENT.image).count();
       if (videos !== (videoFile ? 1 : 0) || images !== (image ? 1 : 0)) {
         throw new Error('composer media state changed before publication');
       }
@@ -561,9 +565,8 @@ async function postAndSend(res, post, videoFile) {
   if (res.destroyed) controller.abort();
   else res.once('close', () => controller.abort());
   // Transcribe inside the queue so posts keep their request order.
-  // Receipt has its own 5-minute limit; keep queue, transcription, at most two
-  // uploads and confirmation inside the client's 30-minute video request budget.
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(videoFile ? 24 * 60_000 : 4 * 60_000)]);
+  // The budget covers queueing, transcription, at most two uploads and confirmation.
+  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS)]);
   const result = await exclusive(() => createPost(post, signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);

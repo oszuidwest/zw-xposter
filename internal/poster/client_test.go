@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -69,10 +70,17 @@ func TestClientPostError(t *testing.T) {
 		name        string
 		fixture     string
 		body        string
+		video       bool
 		wantClicked bool
+		wantStage   string
+		wantResult  Result
 	}{
-		{name: "before click", fixture: "post-error-before-click.json"},
-		{name: "after click", fixture: "post-error-after-click.json", wantClicked: true},
+		{name: "before click", fixture: "post-error-before-click.json", wantStage: "service"},
+		{name: "after click", fixture: "post-error-after-click.json", wantClicked: true, wantStage: "service"},
+		{
+			name: "video stage", fixture: "post-error-video-stage.json", video: true, wantStage: StageVideo,
+			wantResult: Result{Captions: CaptionsNone, FallbackReason: "caption generation: ElevenLabs transcription returned HTTP 503"},
+		},
 		{name: "missing click state", body: `{"error":"outcome unknown"}`, wantClicked: true},
 		{name: "null click state", body: `{"error":"outcome unknown","clicked":null}`, wantClicked: true},
 	}
@@ -92,13 +100,21 @@ func TestClientPostError(t *testing.T) {
 				}
 			})
 
-			_, err := New(server.URL).Post(t.Context(), "synthetic post", nil)
+			var result Result
+			var err error
+			if tt.video {
+				result, err = New(server.URL).PostVideo(t.Context(), "synthetic post", strings.NewReader("mp4"), true)
+			} else {
+				_, err = New(server.URL).Post(t.Context(), "synthetic post", nil)
+			}
 			postErr, ok := errors.AsType[*PostError](err)
 			if !ok {
-				t.Fatalf("Post() error = %T %v, want *PostError", err, err)
+				t.Fatalf("post error = %T %v, want *PostError", err, err)
 			}
 			testutil.Equal(t, postErr.Clicked, tt.wantClicked)
 			testutil.Equal(t, postErr.Status, "500 Internal Server Error")
+			testutil.Equal(t, postErr.Stage, tt.wantStage)
+			testutil.Equal(t, result, tt.wantResult)
 		})
 	}
 }
