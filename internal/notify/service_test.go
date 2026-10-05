@@ -28,8 +28,6 @@ func (m *recordingMailer) subjects() []string {
 	return result
 }
 
-// The tests run in a synctest bubble: time.Sleep advances the fake clock and
-// synctest.Wait returns once the delivery goroutine is idle.
 func TestServiceSendsTransitionsAndReminder(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		service, mailer := newTestService()

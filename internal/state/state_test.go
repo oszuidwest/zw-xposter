@@ -11,7 +11,6 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
 
-// Round-trip full and minimal entries without losing fields or pruning old statuses.
 func TestSaveRoundTripsOldEntries(t *testing.T) {
 	t.Parallel()
 	old := time.Now().UTC().Add(-61 * 24 * time.Hour)

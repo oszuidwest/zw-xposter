@@ -165,7 +165,6 @@ export function createTimelineCollector({ ownId = '', username, cutoff }) {
   let sawFirstPage = false;
   let failure = '';
 
-  // incompleteReason is empty once the pages prove the range was inspected.
   const incompleteReason = () => failure
     || (!sawFirstPage && 'the first UserTweets page was not seen')
     || (!reachedBoundary && 'neither the cutoff nor the end of the timeline was reached')

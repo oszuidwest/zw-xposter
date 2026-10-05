@@ -40,7 +40,6 @@ test('a continuation page cannot complete a timeline without the first page', as
   assert.equal(timeline.result().complete, false);
 });
 
-// Check which page shapes establish completeness and contribute searchable posts.
 for (const [name, page, complete, ids, urls] of [
   ['an old pinned entry does not complete the requested range',
     pinnedPage, false, ['900000000000000202']],
@@ -379,11 +378,15 @@ test('rejects a CreateTweet response without a rest_id', async () => {
   );
 });
 
-test('serializes post errors before and after the click', async () => {
+test('serializes post errors with click state, stage and caption outcome', async () => {
   const before = new Error('composer did not become ready');
   const after = new Error('X rejected the post: Synthetic rejection (after clicking post; it may be on X)');
   after.clicked = true;
+  const video = Object.assign(new Error('video processing failed: {"message":"Synthetic encoding failure"}'), {
+    stage: 'video', captions: 'none', fallbackReason: 'caption generation: ElevenLabs transcription returned HTTP 503',
+  });
 
   assert.deepEqual(postErrorResponse(before), await fixture('post-error-before-click.json'));
   assert.deepEqual(postErrorResponse(after), await fixture('post-error-after-click.json'));
+  assert.deepEqual(postErrorResponse(video), await fixture('post-error-video-stage.json'));
 });
