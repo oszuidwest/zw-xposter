@@ -29,7 +29,6 @@ func LookbackHours(d time.Duration) int {
 	return int(math.Ceil(d.Hours()))
 }
 
-// maxResponseBytes bounds a poster response body.
 const maxResponseBytes = 1 << 20
 
 // Poster contract values shared with poster/server.mjs.
@@ -47,8 +46,7 @@ type Client struct {
 
 // New returns a client for the poster at baseURL.
 func New(baseURL string) *Client {
-	// Logging in and uploading media can take a while; the poster gives up after
-	// POST_TIMEOUT_MS so its error response arrives first.
+	// Leave response headroom beyond the poster's four-minute budget.
 	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 5 * time.Minute}}
 }
 
@@ -64,7 +62,7 @@ type response struct {
 	Stage   string `json:"stage"`
 }
 
-// Result describes the confirmed post and any caption downgrade within the request.
+// Result reports the post URL on success and caption downgrades even on failure.
 type Result struct {
 	URL            string `json:"url"`
 	Captions       string `json:"captions,omitempty"`
@@ -114,8 +112,7 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, ca
 		req.Header.Set("X-Post-Captions", CaptionsNone)
 	}
 	client := *c.http
-	// Receipt has 5 minutes; the poster bounds queueing and all browser work to
-	// VIDEO_POST_TIMEOUT_MS (24).
+	// Allow five minutes for receipt and 24 for queued work, plus response headroom.
 	client.Timeout = 30 * time.Minute
 	return c.sendPost(req, &client)
 }

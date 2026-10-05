@@ -8,7 +8,7 @@ import { URLSearchParams } from 'node:url';
 import { TextDecoder } from 'node:util';
 import xUI from './x-ui.json' with { type: 'json' };
 
-// Must match maxVideoSize in internal/article/video.go. Videos travel as binary, never as JSON/base64.
+// Must match maxVideoSize in internal/article/video.go.
 export const MAX_VIDEO_BYTES = 512 * 1024 * 1024;
 const VIDEO_RECEIVE_TIMEOUT_MS = 5 * 60_000;
 const VIDEO_UPLOAD_TIMEOUT_MS = 10 * 60_000;
@@ -16,7 +16,6 @@ const CAPTION_UPLOAD = new RegExp(xUI.captionUploadPattern, 'i');
 const CAPTION_DONE = new RegExp(xUI.captionDonePattern, 'i');
 const CAPTION_REMOVE = new RegExp(xUI.captionRemovePattern, 'i');
 export const CAPTION_ATTACHED = new RegExp(xUI.captionAttachedPattern, 'i');
-// Composer attachment previews, by upload kind.
 export const ATTACHMENT = { video: '[data-testid="attachments"] video', image: '[data-testid="attachments"] img' };
 export const ANY_ATTACHMENT = `${ATTACHMENT.image}, ${ATTACHMENT.video}`;
 

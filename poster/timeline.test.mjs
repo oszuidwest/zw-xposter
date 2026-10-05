@@ -40,7 +40,6 @@ test('a continuation page cannot complete a timeline without the first page', as
   assert.equal(timeline.result().complete, false);
 });
 
-// Check which page shapes establish completeness and contribute searchable posts.
 for (const [name, page, complete, ids, urls] of [
   ['an old pinned entry does not complete the requested range',
     pinnedPage, false, ['900000000000000202']],

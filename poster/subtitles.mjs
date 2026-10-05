@@ -32,7 +32,7 @@ function milliseconds(time) {
   return ((hours * 60 + minutes) * 60 + seconds) * 1000 + ms;
 }
 
-// The 10-minute timeout always applies; signal adds caller cancellation.
+// The transcription timeout applies independently of caller cancellation.
 export async function generateSubtitles(videoFile, {
   apiKey = process.env.ELEVENLABS_API_KEY,
   signal,

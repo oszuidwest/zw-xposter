@@ -33,7 +33,6 @@ const PORT = Number(process.env.PORT || 8081);
 const DATA_DIR = process.env.DATA_DIR || '/data';
 const USERNAME = process.env.X_USERNAME;
 const PASSWORD = process.env.X_PASSWORD;
-// Restore a session from auth_token before attempting a password login.
 const AUTH_TOKEN = process.env.X_AUTH_TOKEN || '';
 // Answer for X's "unusual login activity" check (email address or phone number).
 const VERIFICATION = process.env.X_VERIFICATION || '';
@@ -51,12 +50,11 @@ const PROFILE_DIR = path.join(DATA_DIR, 'profile');
 const DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const DEBUG_RETENTION_MS = 14 * 24 * 3600_000;
 const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
-// Back off after failed password logins to limit repeated attempts.
 const LOGIN_RETRY_MS = 30 * 60_000;
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
-// Must stay below the client timeouts in internal/poster/client.go (5 and 30 minutes),
-// so the client receives the error. Video receipt has its own 5 minutes before this.
+// Reserve response headroom within the Go client's 5/30-minute timeouts;
+// video receipt consumes up to five minutes before this budget starts.
 const POST_TIMEOUT_MS = 4 * 60_000;
 const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
@@ -138,7 +136,6 @@ export async function launch() {
   return context;
 }
 
-// Reuse one tab across session checks, timeline reads and posts.
 async function getTab() {
   if (tab && !tab.isClosed()) return tab;
   tab = context.pages().find((p) => !p.isClosed()) || (await context.newPage());
@@ -205,7 +202,6 @@ async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress 
   await page.mouse.up();
 }
 
-// Types with a varying rhythm: quicker inside words, a beat after spaces and punctuation.
 async function humanType(page, text) {
   for (const char of text) {
     await page.keyboard.type(char);
@@ -216,7 +212,6 @@ async function humanType(page, text) {
   }
 }
 
-// Dismiss an overlay before interacting with the page beneath it.
 async function dismissOverlay(page, button, message) {
   if (!(await button.isVisible().catch(() => false))) return;
   await pause(700, 1800);
@@ -255,7 +250,6 @@ async function checkSession(page) {
   return active;
 }
 
-// Picks X's error message (e.g. "login temporarily restricted") out of the page.
 async function pageMessage(page) {
   const text = await page.locator('body').innerText().catch(() => '');
   const lines = text.split('\n').filter((line) => LOGIN_ERROR.test(line));
@@ -370,7 +364,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
   const throwIfGone = () => signal.throwIfAborted();
   // The request may have waited in the queue behind other browser work.
   throwIfGone();
-  // srt stays local; only the caption outcome is reported.
   let { srt, ...caption } = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
   if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
   throwIfGone();
@@ -378,8 +371,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
   let clicked = false;
   let cancelledPage;
   const closeOnCancel = () => { cancelledPage = page.close().catch(() => {}); };
-  // Navigation destroys failed attachments and caption dialogs. Verify the new page
-  // before allowing either an internal retry or a media-classified error response.
+  // Fallback requires verified cleanup of failed attachments and caption dialogs.
   const resetComposer = async () => {
     throwIfGone();
     await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
@@ -408,7 +400,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     await ensureLoggedIn(page);
     for (let attempt = 0; attempt < 2; attempt++) {
       throwIfGone();
-      // Vary the pause and scroll before opening the composer.
       await pause(2000, 5000);
       if (Math.random() < 0.6) {
         await page.mouse.wheel(0, random(200, 700));
@@ -433,7 +424,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
           try {
             await mediaOperation('captions', () => uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone }));
           } catch (err) {
-            // Only caption failures are consumed here; 'captions' never reaches the client.
             if (err.stage !== 'captions') throw err;
             caption.captions = 'none';
             caption.fallbackReason = `caption attachment: ${err.message}`;
@@ -538,7 +528,6 @@ async function recentPosts(hours) {
     // Bound scrolling; reject the request if the window remains incomplete.
     for (let i = 0; i < 8; i++) {
       await Promise.all(pending);
-      // A failed page can never be completed, so further scrolling is wasted.
       if (timeline.complete() || timeline.failed()) break;
       await page.mouse.wheel(0, random(1500, 2500));
       await pause(1500, 3000);

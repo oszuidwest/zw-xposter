@@ -47,7 +47,6 @@ const (
 	// statusAddr is fixed because container/healthcheck.mjs expects it.
 	statusAddr = "127.0.0.1:8080"
 
-	// Alert and Resolve must use the same key for a condition.
 	posterNotReadyKey = "poster:not-ready"
 	pollStaleKey      = "orchestrator:poll-stale"
 )
@@ -161,7 +160,7 @@ func newAlerts(cfg *config.Config) *notify.Service {
 	switch {
 	case cfg.DryRun:
 		slog.Info("email alerting disabled during a dry run")
-		return nil // a nil Service is disabled
+		return nil
 	case !cfg.Graph.Complete():
 		slog.Info("email alerting disabled; Microsoft Graph settings are incomplete")
 	default:
@@ -214,7 +213,6 @@ func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 	}
 }
 
-// pollAndReport updates health and sends a heartbeat only if the poll succeeds.
 func (a *app) pollAndReport(ctx context.Context) error {
 	if err := a.poll(ctx); err != nil {
 		return err
@@ -280,7 +278,6 @@ func (a *app) replay(ctx context.Context, guid string) error {
 			guid, poster.LookbackHours(age), poster.MaxLookbackHours)
 	}
 
-	// Only the article metadata survives; the previous outcome is cleared.
 	retry := state.Entry{
 		Title:             entry.Title,
 		Link:              entry.Link,
@@ -548,15 +545,13 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 	}
 }
 
-// fallbackChain is the fallback chain, one step at a time: next follows a
-// failed download, or a confirmed pre-click poster failure in stage.
+// Download failures and matching pre-click upload failures share this downgrade path.
 var fallbackChain = map[string]struct{ stage, next string }{
 	state.FormatVideoCaptions: {stage: poster.StageVideo, next: state.FormatImage},
 	state.FormatVideo:         {stage: poster.StageVideo, next: state.FormatImage},
 	state.FormatImage:         {stage: poster.StageImage, next: state.FormatText},
 }
 
-// fallbackFormat requires a confirmed pre-click failure in the selected medium.
 func fallbackFormat(format string, err *poster.PostError) string {
 	if err == nil || err.Clicked {
 		return ""
@@ -581,8 +576,7 @@ func (a *app) advanceFormat(ctx context.Context, guid string, entry *state.Entry
 	return nil
 }
 
-// prepareMedia fetches media for entry.Format, descending the chain while a
-// download fails; it never moves back up.
+// prepareMedia resumes the saved format and only downgrades.
 func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.Entry) (*article.Image, *article.Video, error) {
 	if entry.Format == "" {
 		entry.Format = state.FormatImage
@@ -619,7 +613,6 @@ func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.En
 	}
 }
 
-// retryDelay doubles from retryInitial per attempt, up to retryMaximum.
 func retryDelay(attempts int) time.Duration {
 	delay := retryInitial
 	for attempt := 1; attempt < attempts && delay < retryMaximum; attempt++ {
@@ -664,7 +657,6 @@ func (a *app) record(guid string, entry *state.Entry) error {
 	return nil
 }
 
-// workflowAlert builds an alert only on transition to missed or failed_terminal.
 func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, bool) {
 	if previous.Status == entry.Status {
 		return notify.Event{}, false
@@ -781,7 +773,6 @@ func (a *app) save() error {
 	return nil
 }
 
-// postText formats the post as "<title> <link>", shortening the title to fit.
 func postText(item *feed.Item) string {
 	title := item.Title
 	if runes := []rune(title); len(runes) > maxTitleRunes {
