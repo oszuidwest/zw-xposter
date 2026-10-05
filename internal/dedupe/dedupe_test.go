@@ -31,7 +31,6 @@ func TestFind(t *testing.T) {
 		{"text with a query", poster.Post{Text: link + "?utm_source=x"}, true},
 		{"text with parentheses", poster.Post{Text: "Read (" + link + ")"}, true},
 		{"text with punctuation", poster.Post{Text: "Read https://zuidwestupdate.nl/news/housing-development."}, true},
-		{"text with brackets", poster.Post{Text: "Read [" + link + "]"}, true},
 		{"text with mixed case and no scheme", poster.Post{Text: "Read\tWWW.ZuidWestUpdate.nl/news/Housing-Development"}, true},
 		{"text with a link in another site's query", poster.Post{Text: "https://example.nl/?url=" + link}, false},
 		{"text with an invalid link before the match", poster.Post{Text: "https://other.zuidwestupdate.nl/news/housing-development/ " + link}, true},

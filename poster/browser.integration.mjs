@@ -16,9 +16,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   process.env.X_AUTH_TOKEN = 'offline-test';
   process.env.X_PASSWORD = '';
   process.env.HEADLESS = 'true';
-  process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
   const srt = '1\n00:00:00,000 --> 00:00:02,500\nNieuws uit West-Brabant.\n\n';
-  let failTranscription = false;
+  let failTranscription;
   let transcriptions = 0;
   const realFetch = globalThis.fetch;
   t.mock.method(globalThis, 'fetch', async (url, options) => {
@@ -40,14 +39,14 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
   const pageHTML = await fixture('browser-page.html');
-  let rejectPost = false;
-  let failPagination = false;
-  let failVideo = false;
-  let uploadStatus = 200;
-  let failCaptions = false;
-  let failImage = false;
-  let failRecovery = false;
-  let loggedOut = false;
+  let rejectPost;
+  let failPagination;
+  let failVideo;
+  let uploadStatus;
+  let failCaptions;
+  let failImage;
+  let failRecovery;
+  let loggedOut;
   let videoStatusRequested;
   let videoProcessing;
   let uploadedBytes = 0;
@@ -55,6 +54,16 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let captionsRequested;
   let captionsAccepted;
   t.beforeEach(() => {
+    failTranscription = false;
+    rejectPost = false;
+    failPagination = false;
+    failVideo = false;
+    uploadStatus = 200;
+    failCaptions = false;
+    failImage = false;
+    failRecovery = false;
+    loggedOut = false;
+    process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
     videoStatusRequested = Promise.withResolvers();
     videoProcessing = Promise.withResolvers();
     captionsRequested = Promise.withResolvers();
@@ -202,7 +211,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(body.clicked, true);
     assert.match(body.error, /Synthetic rejection/);
     assert.equal(published.at(-1), 'Rejected');
-    rejectPost = false;
   });
 
   await t.test('binary videos larger than the JSON limit wait for encoding before posting', async () => {
@@ -222,25 +230,29 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(published.at(-1), 'Video café 🎥');
   });
 
-  for (const transcription of [true, false]) await t.test(`failed ${transcription ? 'transcription publishes without captions' : 'encoding reports video stage'}`, async () => {
-    failTranscription = transcription;
-    failVideo = !transcription;
+  await t.test('failed transcription publishes without captions', async () => {
+    failTranscription = true;
+    videoProcessing.resolve();
+    const before = published.length;
+    const response = await postVideo('Bad transcript', Buffer.from('synthetic MP4'));
+    assert.equal(response.status, 200);
+    const result = await response.json();
+    assert.equal(result.captions, 'none');
+    assert.match(result.fallbackReason, /HTTP 503/);
+    assert.equal(published.length, before + 1);
+  });
+
+  await t.test('failed encoding reports video stage', async () => {
+    failVideo = true;
     videoProcessing.resolve();
     const before = [...published];
     const response = await postVideo('Bad video', Buffer.from('synthetic MP4'));
-    assert.equal(response.status, transcription ? 200 : 500);
+    assert.equal(response.status, 500);
     const result = await response.json();
-    if (transcription) {
-      assert.equal(result.captions, 'none');
-      assert.match(result.fallbackReason, /HTTP 503/);
-      assert.equal(published.length, before.length + 1);
-    } else {
-      assert.equal(result.clicked, false);
-      assert.equal(result.stage, 'video');
-      assert.match(result.error, /Synthetic encoding failure/);
-      assert.deepEqual(published, before);
-    }
-    failTranscription = failVideo = false;
+    assert.equal(result.clicked, false);
+    assert.equal(result.stage, 'video');
+    assert.match(result.error, /Synthetic encoding failure/);
+    assert.deepEqual(published, before);
   });
 
   for (const skip of [false, true]) await t.test(skip ? 'persisted caption downgrade skips transcription' : 'missing key publishes uncaptioned video', async () => {
@@ -251,7 +263,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(response.status, 200);
     assert.equal((await response.json()).captions, 'none');
     assert.equal(transcriptions, before);
-    process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
   });
 
   await t.test('caption attachment failure recovers once and reuploads without another transcript', async () => {
@@ -269,7 +280,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(transcriptions, before + 1);
     assert.equal(uploads, uploadsBefore + 2);
     assert.equal(published.length, posts + 1);
-    failCaptions = false;
   });
 
   await t.test('image upload failure permits a clean text request', async () => {
@@ -295,7 +305,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const result = await response.json();
     assert.equal(result.clicked, false);
     assert.equal(result.stage, 'session');
-    uploadStatus = 200;
   });
 
   await t.test('failed composer recovery does not authorize fallback', async () => {
@@ -307,7 +316,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const result = await (await response).json();
     assert.equal(result.clicked, false);
     assert.equal(result.stage, 'service');
-    failRecovery = failVideo = false;
   });
 
   await t.test('login failure does not discard media', async () => {
@@ -318,7 +326,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(result.stage, 'service');
     assert.equal(result.clicked, false);
     assert.equal(published.length, before);
-    loggedOut = false;
   });
 
   await t.test('an HTTP failure in pagination refuses the whole recent result', async () => {

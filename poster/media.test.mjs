@@ -133,22 +133,44 @@ test('synchronous FINALIZE succeeds without processing_info', async (t) => {
   }
 });
 
-test('upload errors, failed encoding, timeout and cancellation prevent posting', async (t) => {
-  for (const mode of ['http', 'encoding', 'api', 'timeout', 'cancelled', 'file selection']) {
-    await t.test(mode, async () => {
-      const f = uploadFixture({ selectError: mode === 'file selection' ? new Error('input detached') : undefined });
-      const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', {
-        timeoutMs: mode === 'timeout' ? 20 : 1000,
-        throwIfCancelled: () => { if (mode === 'cancelled') throw new Error('client gone'); },
-      });
-      const rejected = assert.rejects(upload);
-      if (mode !== 'cancelled') await f.selected;
-      if (mode === 'http') f.emit({}, { status: 400 });
-      if (mode === 'encoding') f.emit({ processing_info: { state: 'failed', error: { message: 'bad codec' } } });
-      if (mode === 'api') f.emit({ errors: [{ message: 'too long' }] });
+test('rejected uploads never reach the preview', async (t) => {
+  for (const [name, status, body, error] of [
+    ['http', 400, {}, /HTTP 400/],
+    ['encoding', 200, { processing_info: { state: 'failed', error: { message: 'bad codec' } } }, /bad codec/],
+    ['api', 200, { errors: [{ message: 'too long' }] }, /too long/],
+  ]) {
+    await t.test(name, async () => {
+      const f = uploadFixture();
+      const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', { timeoutMs: 1000 });
+      const rejected = assert.rejects(upload, error);
+      await f.selected;
+      f.emit(body, { status });
       await rejected;
       assert.equal(f.previews(), 0);
       assert.equal(f.page.listenerCount('response'), 0);
     });
   }
+});
+
+test('upload timeout stops waiting for a response', async () => {
+  const f = uploadFixture();
+  await assert.rejects(uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', { timeoutMs: 20 }), /timeout/);
+  assert.equal(f.previews(), 0);
+  assert.equal(f.page.listenerCount('response'), 0);
+});
+
+test('cancellation prevents upload', async () => {
+  const f = uploadFixture();
+  await assert.rejects(uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4', {
+    throwIfCancelled: () => { throw new Error('client gone'); },
+  }), /client gone/);
+  assert.equal(f.previews(), 0);
+  assert.equal(f.page.listenerCount('response'), 0);
+});
+
+test('file selection failure stops waiting for a response', async () => {
+  const f = uploadFixture({ selectError: new Error('input detached') });
+  await assert.rejects(uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4'), /input detached/);
+  assert.equal(f.previews(), 0);
+  assert.equal(f.page.listenerCount('response'), 0);
 });
