@@ -43,12 +43,12 @@ test('binary video is streamed to disk, captioned, published and removed from di
   const f = await fixture(t, undefined, async (path, { skip }) => {
     file = path;
     assert.equal(await readFile(path, 'utf8'), 'fixture-video');
-    return skip ? { captions: 'none' } : { captions: 'nl', srt: '1\n00:00:00,000 --> 00:00:01,000\nTest\n' };
+    return skip ? { captions: 'none' } : { captions: 'attached', srt: '1\n00:00:00,000 --> 00:00:01,000\nTest\n' };
   });
   const options = { method: 'POST', headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from('video 🎥').toString('base64') }, body: 'fixture-video' };
   const response = await f.request('/post-video', null, options);
   assert.equal(response.status, 200);
-  assert.equal(response.body.captions, 'nl');
+  assert.equal(response.body.captions, 'attached');
   await immediate();
   await assert.rejects(access(file), { code: 'ENOENT' });
   assert.equal(f.calls.filter((c) => c.url.pathname.endsWith('/subtitles/create.json')).length, 1);

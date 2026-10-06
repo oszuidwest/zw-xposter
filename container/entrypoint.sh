@@ -41,9 +41,9 @@ pids+=("$!")
     unset "${!X_@}" ELEVENLABS_API_KEY
     # Bound startup by the healthcheck start period.
     # Authenticated requests queue behind the initial session check.
-    attempt=0
+    deadline=$((SECONDS + 90))
     until (: <>/dev/tcp/127.0.0.1/8081) 2>/dev/null; do
-        if ((++attempt >= 900)); then
+        if ((SECONDS >= deadline)); then
             echo 'poster did not start' >&2
             exit 1
         fi

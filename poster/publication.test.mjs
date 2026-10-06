@@ -10,13 +10,13 @@ function fixture(fail = {}) {
     if (fail[method]) throw fail[method];
     return { id: '123', url: 'https://x.com/fixture/status/123' };
   }]));
-  const transcribe = async () => { calls.push(['transcribe']); return { srt: 'captions', captions: 'nl' }; };
+  const transcribe = async () => { calls.push(['transcribe']); return { srt: 'captions', captions: 'attached' }; };
   return { client, calls, controller, names: () => calls.map(([name]) => name), run: (payload = {}, video = '/tmp/video') => publish(client, { text: 'test', ...payload }, controller.signal, video, transcribe) };
 }
 
 test('captioned publication waits for upload and association before one CreateTweet', async () => {
   const f = fixture();
-  assert.equal((await f.run()).captions, 'nl');
+  assert.equal((await f.run()).captions, 'attached');
   assert.deepEqual(f.names(), ['ensureSession', 'transcribe', 'uploadVideo', 'attachSubtitles', 'createPost']);
 });
 test('dry run does not authenticate, upload, transcribe or publish', async () => {
@@ -32,13 +32,13 @@ test('definite caption rejection reuploads clean video once without retranscript
 test('ambiguous or session failures never discard captions or publish', async () => {
   for (const stage of ['service', 'session']) {
     const f = fixture({ attachSubtitles: Object.assign(new Error('unavailable'), { stage }) });
-    await assert.rejects(f.run(), { stage, clicked: false, captions: 'nl' });
+    await assert.rejects(f.run(), { stage, clicked: false, captions: 'attached' });
     assert.equal(f.names().includes('createPost'), false);
   }
 });
 test('lost publication response is uncertain, never automatically replayed', async () => {
   const f = fixture({ createPost: new Error('connection lost') });
-  await assert.rejects(f.run(), { clicked: true, captions: 'nl' });
+  await assert.rejects(f.run(), { clicked: true, captions: 'attached' });
   assert.equal(f.names().filter((name) => name === 'createPost').length, 1);
 });
 test('image and text paths omit transcription; cancellation prevents publication', async () => {
