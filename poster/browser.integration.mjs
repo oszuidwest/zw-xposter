@@ -50,6 +50,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let failImage;
   let failRecovery;
   let loggedOut;
+  let deleteOther;
+  let rejectDelete;
   let videoStatusRequested;
   let videoProcessing;
   let uploadedBytes = 0;
@@ -76,6 +78,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failImage = false;
     failRecovery = false;
     loggedOut = false;
+    deleteOther = false;
+    rejectDelete = false;
     process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
     videoStatusRequested = Promise.withResolvers();
     videoProcessing = Promise.withResolvers();
@@ -86,6 +90,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     holdCaptionSelection = false;
   });
   const published = [];
+  const deleted = [];
   const unexpected = [];
   await context.route('**/*', async (route) => {
     const request = route.request();
@@ -148,6 +153,13 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         body: await fixture(rejectPost ? 'create-tweet-without-id.json' : 'create-tweet-with-id.json'),
       });
     }
+    if (url.pathname.endsWith('/DeleteTweet')) {
+      deleted.push(request.postDataJSON().variables.tweet_id);
+      return route.fulfill({
+        contentType: 'application/json',
+        body: rejectDelete ? JSON.stringify({ errors: [{ message: 'Synthetic deletion failure' }] }) : await fixture('delete-tweet.json'),
+      });
+    }
     if (url.pathname.endsWith('/UserOriginalsTimeline')) {
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
       if (failPagination && continuation) {
@@ -159,8 +171,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         body: await fixture(failPagination ? 'user-tweets-page-1.json' : 'user-tweets-end.json'),
       });
     }
-    if (['/home', '/fixture_account'].includes(url.pathname)) {
+    if (['/home', '/fixture_account'].includes(url.pathname) || /^\/fixture_account\/status\/\d+$/.test(url.pathname)) {
       let body = pageHTML;
+      if (deleteOther) body = body.replace('tweet_id: tweetID', "tweet_id: '1'");
       body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
       if (loggedOut) body = body.replace('data-testid="SideNav_AccountSwitcher_Button"', 'data-testid="logged-out"');
@@ -178,6 +191,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, image }), signal,
   });
   const image = { mime: 'image/png', data: 'aW1hZ2U=' };
+  const deletePost = (id) => fetch(`${base}/delete`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }),
+  });
   const postVideo = (text, bytes, signal, skipCaptions = false) => fetch(`${base}/post-video`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64'), ...(skipCaptions && { 'x-post-captions': 'none' }) },
@@ -404,6 +420,30 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(result.stage, 'service');
     assert.equal(result.clicked, false);
     assert.equal(published.length, before);
+  });
+
+  await t.test('deletes only the requested post after X confirms', async () => {
+    for (const id of ['', 'abc', '1/2', 601]) assert.equal((await deletePost(id)).status, 400);
+    assert.deepEqual(deleted, []);
+    const response = await deletePost('900000000000000601');
+    assert.equal(response.status, 200);
+    assert.deepEqual(await response.json(), { deleted: '900000000000000601' });
+    assert.deepEqual(deleted, ['900000000000000601']);
+  });
+
+  await t.test('a DeleteTweet request for another post is blocked', async () => {
+    deleteOther = true;
+    const response = await deletePost('900000000000000602');
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /blocked a DeleteTweet request for 1 instead of 900000000000000602/);
+    assert.deepEqual(deleted, ['900000000000000601']);
+  });
+
+  await t.test('an unacknowledged deletion is an error', async () => {
+    rejectDelete = true;
+    const response = await deletePost('900000000000000603');
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /X rejected the deletion: Synthetic deletion failure/);
   });
 
   await t.test('an HTTP failure in pagination refuses the whole recent result', async () => {

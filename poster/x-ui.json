@@ -6,5 +6,6 @@
   "captionUploadPattern": "^(Upload caption file|Ondertitelbestand).*\\.srt",
   "captionDonePattern": "^(Done|Gereed)$",
   "captionRemovePattern": "^(Remove captions|Bijschriften verwijderen)$",
-  "captionAttachedPattern": "^(Dutch|Nederlands|Captions|Transcripties)$"
+  "captionAttachedPattern": "^(Dutch|Nederlands|Captions|Transcripties)$",
+  "deleteMenuPattern": "^(Delete|Verwijderen)$"
 }

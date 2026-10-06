@@ -81,6 +81,26 @@
     });
     document.querySelector('[role=dialog]').remove();
   };
+  const status = location.pathname.match(/^\/fixture_account\/status\/(\d+)$/);
+  if (status) {
+    const tweetID = status[1];
+    const post = document.createElement('article');
+    post.innerHTML = `<a href="/fixture_account/status/${tweetID}"><time>1 u</time></a> <button data-testid="caret">Meer</button>`;
+    const menu = document.createElement('div');
+    menu.setAttribute('role', 'menu');
+    menu.hidden = true;
+    menu.innerHTML = '<div role="menuitem" tabindex="0">Bladwijzer toevoegen</div><div role="menuitem" tabindex="0">Verwijderen</div>';
+    const sheet = document.createElement('div');
+    sheet.hidden = true;
+    sheet.innerHTML = '<button data-testid="confirmationSheetConfirm">Verwijderen</button>';
+    post.querySelector('[data-testid=caret]').onclick = () => { menu.hidden = false; };
+    menu.lastChild.onclick = () => { menu.hidden = true; sheet.hidden = false; };
+    sheet.firstChild.onclick = async () => {
+      await fetch('/i/api/graphql/offline/DeleteTweet', { method: 'POST', body: JSON.stringify({ variables: { tweet_id: tweetID } }) }).catch(() => {});
+      sheet.remove();
+    };
+    document.body.append(post, menu, sheet);
+  }
   if (location.pathname === '/fixture_account') {
     (async () => {
       const response = await fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%7D');

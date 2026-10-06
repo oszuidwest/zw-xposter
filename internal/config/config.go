@@ -22,6 +22,7 @@ type Config struct {
 	PollInterval        time.Duration
 	PostDelay           time.Duration
 	MaxAge              time.Duration
+	VideoReplaceWindow  time.Duration
 	PosterNotReadyAfter time.Duration
 	PollStaleAfter      time.Duration
 	AlertReminder       time.Duration
@@ -71,6 +72,9 @@ func Load() (*Config, error) {
 	if cfg.MaxAge, err = parse("MAX_AGE", 24*time.Hour, time.ParseDuration); err != nil {
 		return nil, err
 	}
+	if cfg.VideoReplaceWindow, err = parse("VIDEO_REPLACE_WINDOW", 6*time.Hour, time.ParseDuration); err != nil {
+		return nil, err
+	}
 	if cfg.PosterNotReadyAfter, err = parse("POSTER_NOT_READY_AFTER", 30*time.Minute, time.ParseDuration); err != nil {
 		return nil, err
 	}
@@ -93,6 +97,9 @@ func Load() (*Config, error) {
 	// Zero would mark every new article as missed before it is posted.
 	if cfg.MaxAge <= 0 {
 		return nil, errors.New("MAX_AGE must be greater than zero")
+	}
+	if cfg.VideoReplaceWindow < 0 {
+		return nil, errors.New("VIDEO_REPLACE_WINDOW must not be negative")
 	}
 	if cfg.PosterNotReadyAfter <= 0 {
 		return nil, errors.New("POSTER_NOT_READY_AFTER must be greater than zero")

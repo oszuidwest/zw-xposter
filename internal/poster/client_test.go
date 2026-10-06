@@ -1,7 +1,9 @@
 package poster
 
 import (
+	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -168,6 +170,75 @@ func TestClientPostRequiresConfirmation(t *testing.T) {
 			}
 			if _, ok := errors.AsType[*PostError](err); ok {
 				t.Fatal("missing confirmation must not be classified as a safe pre-click error")
+			}
+		})
+	}
+}
+
+func TestStatusID(t *testing.T) {
+	t.Parallel()
+
+	for _, tt := range []struct {
+		url, want string
+		ok        bool
+	}{
+		{url: "https://x.com/zwupdate/status/900000000000000101", want: "900000000000000101", ok: true},
+		{url: "https://x.com/zwupdate/status/900000000000000101/", want: "900000000000000101", ok: true},
+		{url: "https://x.com/zwupdate/status/900000000000000101/analytics"},
+		{url: "https://x.com/zwupdate/status/abc"},
+		{url: "https://x.com/zwupdate"},
+		{url: "https://x.com/status/"},
+		{url: "%"},
+	} {
+		id, ok := StatusID(tt.url)
+		if id != tt.want || ok != tt.ok {
+			t.Errorf("StatusID(%q) = %q, %v; want %q, %v", tt.url, id, ok, tt.want, tt.ok)
+		}
+	}
+}
+
+func TestClientDelete(t *testing.T) {
+	t.Parallel()
+
+	const postURL = "https://x.com/fixture_account/status/900000000000000101"
+	tests := []struct {
+		name    string
+		url     string
+		status  int
+		body    string
+		wantErr string
+	}{
+		{name: "confirmed", url: postURL, status: http.StatusOK, body: `{"deleted":"900000000000000101"}`},
+		{name: "poster failure", url: postURL, status: http.StatusInternalServerError, body: `{"error":"menu missing"}`, wantErr: "menu missing"},
+		{name: "other post confirmed", url: postURL, status: http.StatusOK, body: `{"deleted":"900000000000000102"}`, wantErr: "instead of"},
+		{name: "unconfirmed success", url: postURL, status: http.StatusOK, body: `{}`, wantErr: "instead of"},
+		{name: "malformed", url: postURL, status: http.StatusOK, body: `{`, wantErr: "poster returned"},
+		{name: "not a post URL", url: "https://x.com/fixture_account", wantErr: "not an X post URL"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var calls int
+			server := testutil.Server(t, func(w http.ResponseWriter, r *http.Request) {
+				calls++
+				testutil.Equal(t, r.Method, http.MethodPost)
+				testutil.Equal(t, r.URL.Path, "/delete")
+				var payload struct{ ID string }
+				testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+				testutil.Equal(t, payload.ID, "900000000000000101")
+				w.WriteHeader(tt.status)
+				_, _ = io.WriteString(w, tt.body)
+			})
+
+			err := New(server.URL).Delete(t.Context(), tt.url)
+			if tt.wantErr == "" {
+				testutil.NoError(t, err)
+			} else {
+				testutil.ErrorContains(t, err, tt.wantErr)
+			}
+			if tt.status == 0 && calls != 0 {
+				t.Errorf("invalid URL reached the poster")
 			}
 		})
 	}

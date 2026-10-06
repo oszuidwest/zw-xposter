@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"html"
 	"io"
@@ -36,6 +37,7 @@ type pollTestOptions struct {
 	video   bool
 	recent  func(http.ResponseWriter, *http.Request, feed.Item)
 	post    func(http.ResponseWriter, *http.Request, feed.Item)
+	delete  func(http.ResponseWriter, *http.Request)
 	content http.HandlerFunc
 }
 
@@ -47,6 +49,7 @@ type pollTest struct {
 	recentCalls atomic.Int32
 	recentHours atomic.Int64
 	postCalls   atomic.Int32
+	deleteCalls atomic.Int32
 	feedCalls   atomic.Int32
 	heartbeats  atomic.Int32
 }
@@ -94,6 +97,9 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 				return
 			}
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/fixture/status/1"})
+		case "/delete":
+			fixture.deleteCalls.Add(1)
+			serveDelete(t, w, r, opts.delete)
 		default:
 			if opts.content != nil {
 				opts.content(w, r)
@@ -144,11 +150,12 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 
 	fixture.app = &app{
 		cfg: &config.Config{
-			FeedURL:   server.URL + "/feed",
-			PosterURL: server.URL,
-			StateFile: statePath,
-			PostDelay: 0,
-			MaxAge:    24 * time.Hour,
+			FeedURL:            server.URL + "/feed",
+			PosterURL:          server.URL,
+			StateFile:          statePath,
+			PostDelay:          0,
+			MaxAge:             24 * time.Hour,
+			VideoReplaceWindow: 6 * time.Hour,
 		},
 		store:  store,
 		http:   server.Client(),
@@ -157,6 +164,19 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 		status: operational.New(10 * time.Minute),
 	}
 	return fixture
+}
+
+// serveDelete confirms deletions unless the test handles them.
+func serveDelete(t *testing.T, w http.ResponseWriter, r *http.Request, handler func(http.ResponseWriter, *http.Request)) {
+	if handler != nil {
+		handler(w, r)
+		return
+	}
+	var payload struct{ ID string }
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		t.Error(err)
+	}
+	testutil.JSON(t, w, http.StatusOK, map[string]string{"deleted": payload.ID})
 }
 
 // poll requires a successful workflow run and returns the primary item's state.
