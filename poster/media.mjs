@@ -53,8 +53,10 @@ export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir
   }
 }
 
+const X_API_HOSTS = ['x.com', 'api.x.com'];
+
 function isMediaUpload(url) {
-  return ['upload.x.com', 'upload.twitter.com', 'x.com', 'api.x.com'].includes(url.hostname)
+  return ['upload.x.com', 'upload.twitter.com', ...X_API_HOSTS].includes(url.hostname)
     && /\/(?:i|1\.1)\/media\/upload\.json$/.test(url.pathname);
 }
 
@@ -152,14 +154,14 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
   const onRequest = (request) => {
     requests.add(request);
     const url = new URL(request.url());
-    if (['x.com', 'api.x.com'].includes(url.hostname) && /\/Create(?:Note)?Tweet$/.test(url.pathname)) publicationStarted = true;
+    if (X_API_HOSTS.includes(url.hostname) && /\/Create(?:Note)?Tweet$/.test(url.pathname)) publicationStarted = true;
   };
   page.on('request', onRequest);
   return page.waitForResponse(async (response) => {
     const request = response.request();
     if (!requests.has(request)) return false;
     const url = new URL(response.url());
-    const xHost = ['x.com', 'api.x.com'].includes(url.hostname);
+    const xHost = X_API_HOSTS.includes(url.hostname);
     if (xHost && url.pathname.endsWith('/CreateTweet')) return true;
     const subtitleAssociation = xHost && /\/media\/subtitles\/create\.json$/.test(url.pathname);
     const metadata = xHost && /\/media\/metadata\/create\.json$/.test(url.pathname);
@@ -184,12 +186,16 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
     if (!captionInit) await Promise.all(pendingInits);
     const captionUpload = captionInit || captionIDs.has(uploadParameter(url, request, 'media_id'));
 
-    const failure = body?.errors?.length ? body.errors : body?.error || (body?.processing_info?.state === 'failed' && body.processing_info.error);
-    if (response.ok() && !failure && body?.processing_info?.state !== 'failed') return false;
-    const captionFailure = captionUpload || subtitleAssociation;
+    const processingFailed = body?.processing_info?.state === 'failed';
+    const failure = body?.errors?.length ? body.errors : body?.error || (processingFailed && body.processing_info.error);
+    if (response.ok() && !failure && !processingFailed) return false;
     // Unknown API errors and account restrictions must not discard subtitles.
-    let stage = captionFailure && !publicationStarted && !body?.errors?.length ? 'captions' : 'service';
-    if ([401, 403].includes(response.status())) stage = 'session';
+    let stage = 'service';
+    if ([401, 403].includes(response.status())) {
+      stage = 'session';
+    } else if ((captionUpload || subtitleAssociation) && !publicationStarted && !body?.errors?.length) {
+      stage = 'captions';
+    }
     let operation = `${captionUpload ? 'caption' : 'media'} upload${command ? ` ${command}` : ''}`;
     if (subtitleAssociation) operation = 'caption association';
     if (metadata) operation = 'media metadata';

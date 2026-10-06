@@ -170,7 +170,7 @@ func TestLateCaptionFailureReconcilesBeforeUncaptionedRetry(t *testing.T) {
 						})
 						return
 					}
-					testutil.Equal(t, f.recentCalls.Load(), int32(2))
+					testutil.Equal(t, f.recentCalls.Load(), 2)
 					testutil.Equal(t, r.Header.Get("X-Post-Captions"), "none")
 					testutil.JSON(t, w, http.StatusOK, map[string]string{"url": "https://x.invalid/status/1", "captions": "none"})
 				},

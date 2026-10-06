@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { EventEmitter } from 'node:events';
-import { setTimeout, clearTimeout } from 'node:timers';
+import { setImmediate, setTimeout, clearTimeout } from 'node:timers';
 import { URLSearchParams } from 'node:url';
 import test from 'node:test';
 import { waitForPostResponse } from './media.mjs';
@@ -8,25 +8,22 @@ import { waitForPostResponse } from './media.mjs';
 function fixture(t, { timeoutMs = 1000 } = {}) {
   const page = new EventEmitter();
   // Playwright invokes async predicates concurrently as responses arrive.
-  page.waitForResponse = (predicate, { signal, timeout }) => new Promise((resolve, reject) => {
-    let settled = false;
-    const finish = (error, value) => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timer);
-      page.off('response', listener);
-      signal.removeEventListener('abort', abort);
-      if (error) reject(error); else resolve(value);
-    };
+  page.waitForResponse = (predicate, { signal, timeout }) => {
+    const { promise, resolve, reject } = Promise.withResolvers();
     const listener = async (response) => {
-      try { if (await predicate(response)) finish(null, response); } catch (error) { finish(error); }
+      try { if (await predicate(response)) resolve(response); } catch (error) { reject(error); }
     };
-    const abort = () => finish(signal.reason);
-    const timer = setTimeout(() => finish(new Error('timeout')), timeout);
+    const abort = () => reject(signal.reason);
+    const timer = setTimeout(() => reject(new Error('timeout')), timeout);
     page.on('response', listener);
     signal.addEventListener('abort', abort, { once: true });
     if (signal.aborted) abort();
-  });
+    return promise.finally(() => {
+      clearTimeout(timer);
+      page.off('response', listener);
+      signal.removeEventListener('abort', abort);
+    });
+  };
   const controller = new AbortController();
   t.after(() => controller.abort());
   const result = waitForPostResponse(page, { signal: controller.signal, timeoutMs });
@@ -40,8 +37,7 @@ function fixture(t, { timeoutMs = 1000 } = {}) {
     const response = { url: req.url, request: () => req, status: () => status, ok: () => status >= 200 && status < 300, headers: () => ({ 'content-type': typeof body === 'string' ? 'text/plain' : 'application/json' }), text: read || (async () => typeof body === 'string' ? body : JSON.stringify(body)) };
     page.emit('response', response);
     // Drain async predicate work when the response body is immediately available.
-    await Promise.resolve();
-    await Promise.resolve();
+    await new Promise(setImmediate);
     return response;
   };
   const upload = async (parameters, options) => respond(request(`https://upload.x.com/i/media/upload.json?${new URLSearchParams(parameters)}`), options);
@@ -52,7 +48,7 @@ function fixture(t, { timeoutMs = 1000 } = {}) {
     assert.equal(page.listenerCount('request'), 0);
     assert.equal(page.listenerCount('response'), 0);
   };
-  return { page, controller, result, request, respond, upload, init, finish, publish, cleaned };
+  return { controller, result, request, respond, upload, init, finish, publish, cleaned };
 }
 
 test('caption upload and association successes still require CreateTweet', async (t) => {

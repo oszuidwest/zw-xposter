@@ -60,6 +60,7 @@ const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
+const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
 
 let context;
 let tab;
@@ -496,7 +497,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     // AbortSignal throws a DOMException with a read-only message.
     const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
     if (page && clicked) {
-      const banner = page.getByText(/^(Some of your media failed to upload\.?|Een deel van je media kon niet worden geüpload\.)$/);
+      const banner = page.getByText(MEDIA_UPLOAD_FAILED);
       if (await banner.isVisible().catch(() => false)) {
         const message = await banner.innerText({ timeout: 1000 }).catch(() => '');
         if (message) err.message += ` (X: ${message})`;
