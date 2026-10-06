@@ -74,7 +74,6 @@ export async function generateSubtitles(videoFile, {
   const srt = output.is_base64_encoded
     ? utf8.decode(Buffer.from(output.content, 'base64'))
     : output.content;
-  // Reject empty transcripts, malformed timings and incomplete cues before X sees them.
   const cues = srt.trim().replaceAll('\r\n', '\n').split('\n\n');
   let previousEnd = 0;
   for (const [index, cue] of cues.entries()) {

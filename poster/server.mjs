@@ -15,7 +15,7 @@ import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
 import { pruneScreenshots } from './debug.mjs';
-import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText } from './media.mjs';
+import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText, waitForPostResponse } from './media.mjs';
 import { prepareSubtitles } from './subtitles.mjs';
 import {
   sessionCheckDelay,
@@ -60,6 +60,7 @@ const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
+const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
 
 let context;
 let tab;
@@ -96,7 +97,7 @@ async function writeLanguagePreference() {
   try {
     prefs = JSON.parse(await fs.readFile(file, 'utf8'));
   } catch {
-    // Missing or unreadable preferences fall back to Chromium defaults.
+    // Rebuild missing or unreadable preferences with only the language settings.
   }
   prefs.intl = { ...prefs.intl, accept_languages: LANGUAGES.join(','), selected_languages: LANGUAGES.join(',') };
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -463,26 +464,45 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         return { dryRun: true, screenshot: file };
       }
 
-      const response = page.waitForResponse((r) => new URL(r.url()).pathname.endsWith('/CreateTweet'), { timeout: 60_000 });
-      // Not awaited when the click fails; an unhandled rejection would crash the process.
+      const release = new AbortController();
+      const response = waitForPostResponse(page, { signal: AbortSignal.any([signal, release.signal]) });
+      // A failed click can leave this rejection unawaited.
       response.catch(() => {});
-      await humanClick(page, button, {
-        throwIfCancelled: throwIfGone,
-        onPress: () => {
-          clicked = true;
-        },
-      });
-      const body = await (await response).json();
-      const result = parseCreateTweetResponse(body, USERNAME);
-      await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
-      return { ...result, ...caption };
+      try {
+        await humanClick(page, button, {
+          throwIfCancelled: throwIfGone,
+          onPress: () => {
+            clicked = true;
+          },
+        });
+        const body = await (await response).json();
+        const result = parseCreateTweetResponse(body, USERNAME);
+        await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
+        return { ...result, ...caption };
+      } catch (err) {
+        if (err.stage === 'captions') {
+          caption.captions = 'none';
+          caption.fallbackReason = `caption upload: ${err.message}`;
+          // Keep clicked=true so the retry checks X before publishing again.
+          log('video without captions on retry:', caption.fallbackReason);
+        }
+        throw err;
+      } finally {
+        release.abort();
+      }
     }
     throw new Error('composer recovery exhausted');
   } catch (cause) {
     // AbortSignal throws a DOMException with a read-only message.
     const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
+    if (page && clicked) {
+      const banner = page.getByText(MEDIA_UPLOAD_FAILED);
+      if (await banner.isVisible().catch(() => false)) {
+        const message = await banner.innerText({ timeout: 1000 }).catch(() => '');
+        if (message) err.message += ` (X: ${message})`;
+      }
+    }
     if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
-    // A post-click failure requires reconciliation before retrying.
     if (clicked) err.message += ' (after clicking post; it may be on X)';
     // Leave no half-written composer behind for the next post.
     try {

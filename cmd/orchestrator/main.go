@@ -91,7 +91,6 @@ func main() {
 	}
 }
 
-// run uses safehttp for content requests unless contentHTTP is supplied for testing.
 func run(opts options, contentHTTP *http.Client) error {
 	if opts.seed && opts.replay != "" {
 		return errors.New("-seed and -replay cannot be combined")
@@ -169,7 +168,6 @@ func newAlerts(cfg *config.Config) *notify.Service {
 	return notify.New(&cfg.Graph, cfg.AlertReminder)
 }
 
-// serve polls until shutdown while exposing status and evaluating alerts.
 func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 	// Detect port conflicts before a poll can publish anything.
 	listener, err := net.Listen("tcp", statusAddr)

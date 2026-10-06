@@ -178,7 +178,6 @@ func (f *pollTest) assertCalls(recent, posts int32) {
 	}
 }
 
-// assertPollFailsUnchanged checks that a failed poll neither posts nor changes state.
 func (f *pollTest) assertPollFailsUnchanged(wantErr string, recent int32) {
 	f.t.Helper()
 	before := maps.Clone(f.app.store.Items)
@@ -208,7 +207,6 @@ func writeFeed(t *testing.T, w http.ResponseWriter, items []feed.Item) {
 	}
 }
 
-// reloadPollState reads the state file as a restarted orchestrator would.
 func reloadPollState(t *testing.T, fixture *pollTest) *state.Store {
 	t.Helper()
 	saved, err := state.Load(fixture.app.cfg.StateFile)
@@ -222,7 +220,6 @@ func blockStateSave(t *testing.T, path string) {
 	testutil.NoError(t, os.Mkdir(path+".tmp", 0o700))
 }
 
-// maxLookbackHours is how errors state the poster's history limit.
 var maxLookbackHours = fmt.Sprintf("%d hours", poster.MaxLookbackHours)
 
 func TestPostText(t *testing.T) {
@@ -602,7 +599,6 @@ func TestLoadStore(t *testing.T) {
 	}
 }
 
-// Dry runs remember previews without persisting them or repeating the X check.
 func TestPollDryRunPreviewsOnce(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{})
 	fixture.app.cfg.DryRun = true
@@ -666,7 +662,6 @@ func TestWorkflowAlertOnlyOnTerminalTransition(t *testing.T) {
 	}
 }
 
-// Only final outcomes clear retry timing and replay markers in state.json.
 func TestRecordClearsScheduleOnlyForFinalStatus(t *testing.T) {
 	tests := []struct {
 		status    string
@@ -807,7 +802,6 @@ func TestPollNeverShortensLookbackBelowMaxAge(t *testing.T) {
 	}
 }
 
-// Stale replay markers on final entries must not widen the duplicate check.
 func TestPollIgnoresReplayMarkerOnFinalEntry(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{
 		published: testNow.Add(-200 * time.Hour),
@@ -847,7 +841,6 @@ func TestRunRejectsMaxAgeBeyondPosterLookback(t *testing.T) {
 	}
 }
 
-// DRY_RUN must preserve state files through recovery, expiry, seeding and replay.
 func TestRunDryRunDoesNotWriteState(t *testing.T) {
 	// A regression must never reach real mail endpoints.
 	for _, key := range []string{"GRAPH_TENANT_ID", "GRAPH_CLIENT_ID", "GRAPH_CLIENT_SECRET", "GRAPH_FROM_ADDRESS", "ALERT_RECIPIENTS"} {

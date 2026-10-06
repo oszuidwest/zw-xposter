@@ -7,6 +7,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -80,7 +81,13 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 				video:   true,
 				content: fallbackContent,
 				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
-					testutil.Equal(t, reloadPollState(t, f).Items[item.GUID].Status, state.StatusPosting)
+					saved, err := state.Load(f.app.cfg.StateFile)
+					if err != nil {
+						t.Error(err)
+						http.Error(w, "read state", http.StatusInternalServerError)
+						return
+					}
+					testutil.Equal(t, saved.Items[item.GUID].Status, state.StatusPosting)
 					current := "video_captions"
 					if r.URL.Path == "/post-video" {
 						if r.Header.Get("X-Post-Captions") == "none" {
@@ -91,7 +98,7 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 							Text  string
 							Image any
 						}
-						testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+						testutil.Equal(t, json.NewDecoder(r.Body).Decode(&payload), nil)
 						testutil.Equal(t, payload.Text, postText(&item))
 						current = "text"
 						if payload.Image != nil {
@@ -137,6 +144,63 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 	}
 }
 
+func TestLateCaptionFailureReconcilesBeforeUncaptionedRetry(t *testing.T) {
+	for _, tt := range []struct {
+		name      string
+		foundOnX  bool
+		wantPosts int32
+	}{
+		{name: "existing post prevents retry", foundOnX: true, wantPosts: 1},
+		{name: "absent post retries without captions", wantPosts: 2},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			now := testNow
+			const reason = "caption upload: X caption upload FINALIZE returned HTTP 400: invalid captions"
+			var f *pollTest
+			f = newPollTest(t, &pollTestOptions{
+				now:     func() time.Time { return now },
+				video:   true,
+				content: fallbackContent,
+				recent: func(w http.ResponseWriter, _ *http.Request, item feed.Item) {
+					posts := []any{}
+					if tt.foundOnX && f.postCalls.Load() > 0 {
+						posts = append(posts, map[string]any{"url": "https://x.invalid/status/1", "urls": []string{item.Link}})
+					}
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"complete": true, "posts": posts})
+				},
+				post: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
+					testutil.Equal(t, r.URL.Path, "/post-video")
+					if f.postCalls.Load() == 1 {
+						testutil.Equal(t, r.Header.Get("X-Post-Captions"), "")
+						testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{
+							"error": reason, "clicked": true, "stage": "captions", "captions": "none", "fallbackReason": reason,
+						})
+						return
+					}
+					testutil.Equal(t, f.recentCalls.Load(), 2)
+					testutil.Equal(t, r.Header.Get("X-Post-Captions"), "none")
+					testutil.JSON(t, w, http.StatusOK, map[string]string{"url": "https://x.invalid/status/1", "captions": "none"})
+				},
+			})
+			entry := f.poll()
+			testutil.Equal(t, entry.Status, state.StatusUncertain)
+			testutil.Equal(t, entry.Format, state.FormatVideo)
+			testutil.Equal(t, entry.FallbackReason, reason)
+			f.assertCalls(1, 1)
+			f.app.store = reloadPollState(t, f)
+			now = entry.NextAttemptAt.Add(-time.Second)
+			f.poll()
+			f.assertCalls(1, 1)
+			now = entry.NextAttemptAt
+			entry = f.poll()
+			testutil.Equal(t, entry.Status, state.StatusPosted)
+			testutil.Equal(t, entry.FoundOnX, tt.foundOnX)
+			testutil.Equal(t, entry.FallbackReason, reason)
+			f.assertCalls(2, tt.wantPosts)
+		})
+	}
+}
+
 func TestCancellationDuringMediaPreparationStopsFallback(t *testing.T) {
 	for _, video := range []bool{false, true} {
 		t.Run(fmt.Sprint("video=", video), func(t *testing.T) {
@@ -158,7 +222,7 @@ func TestCancellationDuringMediaPreparationStopsFallback(t *testing.T) {
 func TestFallbackSaveFailureStopsNextPost(t *testing.T) {
 	var f *pollTest
 	f = newPollTest(t, &pollTestOptions{content: fallbackContent, post: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-		blockStateSave(t, f.app.cfg.StateFile)
+		testutil.Equal(t, os.Mkdir(f.app.cfg.StateFile+".tmp", 0o700), nil)
 		testutil.JSON(t, w, 500, map[string]any{"error": "upload failed", "clicked": false, "stage": "image"})
 	}})
 	testutil.ErrorContains(t, f.app.poll(t.Context()), "save fallback state")

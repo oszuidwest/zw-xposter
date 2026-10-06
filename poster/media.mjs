@@ -53,17 +53,18 @@ export async function receiveVideo(source, { maxBytes = MAX_VIDEO_BYTES, tempDir
   }
 }
 
+const X_API_HOSTS = ['x.com', 'api.x.com'];
+
 function isMediaUpload(url) {
-  return ['upload.x.com', 'upload.twitter.com', 'x.com', 'api.x.com'].includes(url.hostname)
+  return ['upload.x.com', 'upload.twitter.com', ...X_API_HOSTS].includes(url.hostname)
     && /\/(?:i|1\.1)\/media\/upload\.json$/.test(url.pathname);
 }
 
-// The upload command is in the query string or a form-encoded body.
-function uploadCommand(url, request) {
-  const command = url.searchParams.get('command');
-  if (command) return command;
+function uploadParameter(url, request, name) {
+  const value = url.searchParams.get(name);
+  if (value) return value;
   const form = request.headers()['content-type']?.startsWith('application/x-www-form-urlencoded');
-  return form ? new URLSearchParams(request.postData() || '').get('command') : null;
+  return form ? new URLSearchParams(request.postData() || '').get(name) : null;
 }
 
 export const uploadVideo = uploadMedia;
@@ -106,8 +107,8 @@ async function uploadMedia(page, dialog, file, {
     if (info?.state === 'failed') {
       throw new Error(`${kind} processing failed: ${JSON.stringify(info.error || info)}`);
     }
-    // Without processing_info, chunked uploads complete at FINALIZE and simple image uploads in their only response.
-    const command = uploadCommand(url, res.request());
+    // Without processing_info, FINALIZE or a simple image response confirms completion.
+    const command = uploadParameter(url, res.request(), 'command');
     return info?.state === 'succeeded' || Boolean(id && !info && (command === 'FINALIZE' || (kind === 'image' && !command)));
   }, { timeout: timeoutMs, signal: release.signal });
   try {
@@ -131,12 +132,81 @@ export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = ()
     has: page.getByRole('button', { name: CAPTION_DONE }),
   });
   await captions.locator('input[type="file"][accept*=".srt"]').setInputFiles({
-    name: 'video.nl.srt', mimeType: 'application/x-subrip', buffer: Buffer.from(srt),
+    // X's web client categorizes application/x-subrip as tweet_image and rejects it.
+    name: 'video.nl.srt', mimeType: 'text/plain', buffer: Buffer.from(srt),
   });
   await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
   throwIfCancelled();
   await captions.getByRole('button', { name: CAPTION_DONE }).click();
-  // X replaces the upload action with the language or its generic captions label.
+  // Selection only: X uploads the SRT after the Post click.
   await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: 60_000 });
   throwIfCancelled();
+}
+
+// Deferred uploads can fail before CreateTweet; surface their errors without timing out.
+export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
+  const requests = new WeakSet();
+  const captionIDs = new Set();
+  const pendingInits = [];
+  const pendingChecks = [];
+  let publicationStarted = false;
+  const onRequest = (request) => {
+    requests.add(request);
+    const url = new URL(request.url());
+    if (X_API_HOSTS.includes(url.hostname) && /\/Create(?:Note)?Tweet$/.test(url.pathname)) publicationStarted = true;
+  };
+  page.on('request', onRequest);
+  const checkResponse = async (response) => {
+    const request = response.request();
+    if (!requests.has(request)) return false;
+    const url = new URL(response.url());
+    const xHost = X_API_HOSTS.includes(url.hostname);
+    if (xHost && url.pathname.endsWith('/CreateTweet')) {
+      await Promise.all(pendingChecks);
+      return true;
+    }
+    const subtitleAssociation = xHost && /\/media\/subtitles\/create\.json$/.test(url.pathname);
+    const metadata = xHost && /\/media\/metadata\/create\.json$/.test(url.pathname);
+    if (!isMediaUpload(url) && !subtitleAssociation && !metadata) return false;
+    if (response.status() === 204) return false;
+
+    const command = uploadParameter(url, request, 'command');
+    const captionInit = command === 'INIT' && uploadParameter(url, request, 'media_category') === 'subtitles';
+    const readBody = (async () => {
+      // Chromium may omit empty success bodies; JSON can still carry API errors.
+      const emptySuccess = response.ok() && (subtitleAssociation || metadata) && !response.headers()['content-type']?.includes('json');
+      const raw = emptySuccess ? '' : await response.text();
+      let body;
+      try { body = JSON.parse(raw); } catch { /* Keep non-JSON error text. */ }
+      if (captionInit && response.ok() && body?.media_id_string) captionIDs.add(body.media_id_string);
+      return { raw, body };
+    })();
+    if (captionInit) pendingInits.push(readBody);
+    const { raw, body } = await readBody;
+    // Predicates overlap: await INIT bodies before matching caption IDs.
+    if (!captionInit) await Promise.all(pendingInits);
+    const captionUpload = captionInit || captionIDs.has(uploadParameter(url, request, 'media_id'));
+
+    const processingFailed = body?.processing_info?.state === 'failed';
+    const failure = body?.errors?.length ? body.errors : body?.error || (processingFailed && body.processing_info.error);
+    if (response.ok() && !failure && !processingFailed) return false;
+    // Only definite caption failures may discard subtitles.
+    const serviceFailure = [408, 429].includes(response.status()) || response.status() >= 500;
+    let stage = 'service';
+    if ([401, 403].includes(response.status())) {
+      stage = 'session';
+    } else if (!serviceFailure && (captionUpload || subtitleAssociation) && !publicationStarted && !body?.errors?.length) {
+      stage = 'captions';
+    }
+    let operation = `${captionUpload ? 'caption' : 'media'} upload${command ? ` ${command}` : ''}`;
+    if (subtitleAssociation) operation = 'caption association';
+    if (metadata) operation = 'media metadata';
+    const detail = (failure ? (typeof failure === 'string' ? failure : JSON.stringify(failure)) : raw).slice(0, 1000);
+    throw Object.assign(new Error(`X ${operation} returned HTTP ${response.status()}${detail ? `: ${detail}` : ''}`), { stage });
+  };
+  return page.waitForResponse((response) => {
+    const check = checkResponse(response);
+    pendingChecks.push(check);
+    return check;
+  }, { timeout: timeoutMs, signal }).finally(() => page.off('request', onRequest));
 }

@@ -15,9 +15,8 @@ const (
 	maxVideoDuration = 20 * time.Minute
 )
 
-// mp4Duration reads the movie duration from moov/mvhd. Zero means the file
-// does not record it, as in a fragmented MP4. Structural problems wrap
-// ErrUnsupportedVideo; other errors come from reading r.
+// mp4Duration reads moov/mvhd; zero means unknown duration.
+// Invalid boxes wrap ErrUnsupportedVideo; I/O errors pass through.
 func mp4Duration(r io.ReadSeeker) (time.Duration, error) {
 	end, err := r.Seek(0, io.SeekEnd)
 	if err != nil {
@@ -76,8 +75,7 @@ func mp4Duration(r io.ReadSeeker) (time.Duration, error) {
 	return time.Duration(seconds * float64(time.Second)), nil
 }
 
-// findBox scans the boxes from the current offset up to end and leaves r at the
-// payload of the first box of type want, returning where that payload ends.
+// findBox scans to end, leaving r at want's payload and returning its end offset.
 func findBox(r io.ReadSeeker, want string, end int64) (int64, error) {
 	for {
 		start, err := r.Seek(0, io.SeekCurrent)

@@ -40,7 +40,6 @@ func Find(link string, posts []poster.Post) *poster.Post {
 
 const zeroWidthSpace = "\u200b"
 
-// split lowercases the host and escaped path, stripping www and surrounding slashes.
 // Empty paths are rejected so homepages cannot match articles.
 func split(raw string) (host, path string, ok bool) {
 	u, err := url.Parse(strings.TrimSpace(raw))

@@ -19,6 +19,7 @@
 <article>Offline timeline</article>
 <script>
   let noticeShown = false;
+  let captionFile;
   document.querySelector('[data-testid=fileInput]').onchange = async (event) => {
     const file = event.target.files[0];
     const preview = document.createElement(file.type === 'video/mp4' ? 'video' : 'img');
@@ -45,12 +46,11 @@
     document.querySelector('#captions').hidden = false;
   };
   document.querySelector('#captions input').onchange = async (event) => {
-    const response = await fetch('/offline/captions', { method: 'POST', body: event.target.files[0] });
-    if (response.ok) {
-      document.querySelector('#caption-remove').hidden = false;
-      // X replaces the file input after a caption file has been accepted.
-      event.target.remove();
-    }
+    captionFile = event.target.files[0];
+    await globalThis.offlineCaptionSelected?.();
+    document.querySelector('#caption-remove').hidden = false;
+    // Selection changes the UI; X defers the network upload until Post.
+    event.target.remove();
   };
   document.querySelector('#caption-done').onclick = () => {
     if (document.querySelector('#caption-remove').hidden) return;
@@ -59,6 +59,22 @@
     document.querySelector('#caption-open').textContent = 'Transcripties';
   };
   document.querySelector('[data-testid=tweetButton]').onclick = async () => {
+    if (captionFile) {
+      // Observed X behavior: only text/plain selects the subtitles category.
+      const category = captionFile.type === 'text/plain' ? 'subtitles' : 'tweet_image';
+      const init = await fetch(`/i/media/upload.json?command=INIT&media_category=${category}&media_type=${encodeURIComponent(captionFile.type)}`, { method: 'POST' });
+      const { media_id_string: id } = await init.json();
+      const append = await fetch(`/i/media/upload.json?command=APPEND&media_id=${id}`, { method: 'POST', body: captionFile });
+      const finalize = append.ok && await fetch(`/i/media/upload.json?command=FINALIZE&media_id=${id}`, { method: 'POST' });
+      const associated = finalize?.ok && await fetch('/i/api/1.1/media/subtitles/create.json', { method: 'POST', body: JSON.stringify({ media_id: '123', subtitle_id: id }) });
+      if (!associated?.ok) {
+        const error = document.createElement('p');
+        error.setAttribute('role', 'alert');
+        error.textContent = 'Een deel van je media kon niet worden geüpload.';
+        document.querySelector('section').prepend(error);
+        return;
+      }
+    }
     await fetch('/i/api/graphql/offline/CreateTweet', {
       method: 'POST',
       body: JSON.stringify({ text: document.querySelector('[contenteditable]').textContent }),

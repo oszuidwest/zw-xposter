@@ -1,5 +1,3 @@
-// X response parsing and timeline collection without browser or process state.
-
 function errorMessages(body) {
   return body?.errors?.map((error) => error?.message).filter(Boolean).join('; ');
 }
@@ -31,7 +29,7 @@ function tweetResult(itemContent) {
   return result;
 }
 
-// expandedUrls returns expanded t.co links, or null when entities are unreadable.
+// Unreadable link entities return null so duplicate checks fail closed.
 // Media links and absent long-post links need no expansion; legacy links do.
 function expandedUrls(legacy, note) {
   const noteUrls = note?.entity_set?.urls;
@@ -55,8 +53,7 @@ function parseTweet(result, ownId, username) {
   }
   if (!own || legacy?.retweeted_status_result) return null;
 
-  // An unreadable own post could be the duplicate, so it cannot prove the cutoff.
-  // Without expanded links, a t.co URL cannot match an article.
+  // Unreadable own posts could hide duplicates, even beyond the cutoff.
   const createdAt = CREATED_AT.test(legacy?.created_at) ? new Date(legacy.created_at) : new Date(NaN);
   const note = result.note_tweet?.note_tweet_results?.result;
   const urls = expandedUrls(legacy, note);
