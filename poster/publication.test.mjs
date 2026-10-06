@@ -157,13 +157,23 @@ test('unrelated media and metadata errors do not discard captions', async (t) =>
   });
 });
 
-test('a caption error after CreateTweet has started remains a service error', async (t) => {
-  const f = fixture(t);
-  await f.init();
-  f.request('https://x.com/i/api/graphql/test/CreateTweet');
-  await f.upload({ command: 'FINALIZE', media_id: 'captions-1' }, { status: 400, body: 'late error' });
-  await assert.rejects(f.result, { stage: 'service' });
-  f.cleaned();
+test('CreateTweet waits for earlier response checks and preserves their errors', async (t) => {
+  for (const path of ['/i/media/upload.json?command=INIT&media_category=subtitles', '/i/media/upload.json?command=FINALIZE&media_id=captions-1', '/i/api/1.1/media/subtitles/create.json', '/i/api/1.1/media/metadata/create.json']) {
+    for (const status of [200, 400, 401, 429, 500]) await t.test(`${path} HTTP ${status}`, async (t) => {
+      const f = fixture(t);
+      await f.init();
+      const body = Promise.withResolvers();
+      await f.respond(f.request(`https://x.com${path}`), { status, body: {}, read: () => body.promise });
+      let settled = false;
+      f.result.then(() => { settled = true; }, () => { settled = true; });
+      const response = await f.publish();
+      assert.equal(settled, false, 'publication must wait for the earlier response body');
+      body.resolve(JSON.stringify(status === 200 ? {} : { error: 'late error' }));
+      if (status === 200) assert.equal(await f.result, response);
+      else await assert.rejects(f.result, (error) => error.stage === (status === 401 ? 'session' : 'service') && error.message.includes('late error'));
+      f.cleaned();
+    });
+  }
 });
 
 test('old responses and foreign hosts cannot settle the current publication', async (t) => {
@@ -186,7 +196,9 @@ test('non-JSON HTTP errors retain status and bounded details', async (t) => {
 
 test('timeout and cancellation remove the request observer', async (t) => {
   for (const cancel of [false, true]) await t.test(cancel ? 'cancellation' : 'timeout', async (t) => {
-    const f = fixture(t, { timeoutMs: 10 });
+    const f = fixture(t, { timeoutMs: cancel ? 1000 : 10 });
+    await f.respond(f.request('https://x.com/i/api/1.1/media/subtitles/create.json'), { body: {}, read: () => new Promise(() => {}) });
+    await f.publish();
     if (cancel) f.controller.abort(new Error('cancelled'));
     await assert.rejects(f.result, cancel ? /cancelled/ : /timeout/);
     f.cleaned();

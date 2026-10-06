@@ -148,6 +148,7 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
   const requests = new WeakSet();
   const captionIDs = new Set();
   const pendingInits = [];
+  const pendingChecks = [];
   let publicationStarted = false;
   const onRequest = (request) => {
     requests.add(request);
@@ -155,12 +156,15 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
     if (X_API_HOSTS.includes(url.hostname) && /\/Create(?:Note)?Tweet$/.test(url.pathname)) publicationStarted = true;
   };
   page.on('request', onRequest);
-  return page.waitForResponse(async (response) => {
+  const checkResponse = async (response) => {
     const request = response.request();
     if (!requests.has(request)) return false;
     const url = new URL(response.url());
     const xHost = X_API_HOSTS.includes(url.hostname);
-    if (xHost && url.pathname.endsWith('/CreateTweet')) return true;
+    if (xHost && url.pathname.endsWith('/CreateTweet')) {
+      await Promise.all(pendingChecks);
+      return true;
+    }
     const subtitleAssociation = xHost && /\/media\/subtitles\/create\.json$/.test(url.pathname);
     const metadata = xHost && /\/media\/metadata\/create\.json$/.test(url.pathname);
     if (!isMediaUpload(url) && !subtitleAssociation && !metadata) return false;
@@ -199,5 +203,10 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
     if (metadata) operation = 'media metadata';
     const detail = (failure ? (typeof failure === 'string' ? failure : JSON.stringify(failure)) : raw).slice(0, 1000);
     throw Object.assign(new Error(`X ${operation} returned HTTP ${response.status()}${detail ? `: ${detail}` : ''}`), { stage });
+  };
+  return page.waitForResponse((response) => {
+    const check = checkResponse(response);
+    pendingChecks.push(check);
+    return check;
   }, { timeout: timeoutMs, signal }).finally(() => page.off('request', onRequest));
 }
