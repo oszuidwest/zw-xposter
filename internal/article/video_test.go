@@ -38,7 +38,7 @@ func TestFetchVideo(t *testing.T) {
 		case "/empty":
 		case "/unsized":
 			// Flushing first omits Content-Length, so only the download can detect an oversize video.
-			testutil.NoError(t, http.NewResponseController(w).Flush())
+			testutil.Equal(t, http.NewResponseController(w).Flush(), nil)
 			_, _ = w.Write(mp4)
 		case "/not-mp4":
 			_, _ = io.WriteString(w, "<html>not a video</html>")

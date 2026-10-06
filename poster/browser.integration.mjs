@@ -305,7 +305,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published, before);
   });
 
-  for (const status of [403, 429, 500, 502, 503]) await t.test(`a deferred caption HTTP ${status} preserves the caption format`, async () => {
+  for (const status of [403, 408, 429, 500, 502, 503]) await t.test(`a deferred caption HTTP ${status} preserves the caption format`, async () => {
     captionStatus = status;
     videoProcessing.resolve();
     captionsAccepted.resolve();

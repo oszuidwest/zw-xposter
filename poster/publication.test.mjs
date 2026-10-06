@@ -29,18 +29,29 @@ function fixture(t, { timeoutMs = 1000 } = {}) {
   const result = waitForPostResponse(page, { signal: controller.signal, timeoutMs });
   result.catch(() => {});
   const request = (url, form) => {
-    const req = { url: () => url, headers: () => form ? { 'content-type': 'application/x-www-form-urlencoded' } : {}, postData: () => form };
+    const req = {
+      url: () => url,
+      headers: () => form ? { 'content-type': 'application/x-www-form-urlencoded' } : {},
+      postData: () => form,
+    };
     page.emit('request', req);
     return req;
   };
   const respond = async (req, { status = 200, body = '', read } = {}) => {
-    const response = { url: req.url, request: () => req, status: () => status, ok: () => status >= 200 && status < 300, headers: () => ({ 'content-type': typeof body === 'string' ? 'text/plain' : 'application/json' }), text: read || (async () => typeof body === 'string' ? body : JSON.stringify(body)) };
+    const response = {
+      url: req.url,
+      request: () => req,
+      status: () => status,
+      ok: () => status >= 200 && status < 300,
+      headers: () => ({ 'content-type': typeof body === 'string' ? 'text/plain' : 'application/json' }),
+      text: read || (async () => typeof body === 'string' ? body : JSON.stringify(body)),
+    };
     page.emit('response', response);
     // Drain async predicate work when the response body is immediately available.
     await new Promise(setImmediate);
     return response;
   };
-  const upload = async (parameters, options) => respond(request(`https://upload.x.com/i/media/upload.json?${new URLSearchParams(parameters)}`), options);
+  const upload = (parameters, options) => respond(request(`https://upload.x.com/i/media/upload.json?${new URLSearchParams(parameters)}`), options);
   const init = () => upload({ command: 'INIT', media_category: 'subtitles' }, { status: 202, body: { media_id_string: 'captions-1' } });
   const finish = () => upload({ command: 'FINALIZE', media_id: 'captions-1' }, { status: 201, body: { media_id_string: 'captions-1', subtitles: { subtitle_format: 'text/srt' } } });
   const publish = () => respond(request('https://x.com/i/api/graphql/test/CreateTweet'), { body: { data: {} } });
@@ -117,8 +128,8 @@ test('account restrictions and ambiguous API errors never downgrade captions', a
   });
 });
 
-test('rate limits and server failures never downgrade captions', async (t) => {
-  for (const status of [429, 500, 502, 503]) {
+test('request timeouts, rate limits and server failures never downgrade captions', async (t) => {
+  for (const status of [408, 429, 500, 502, 503]) {
     for (const operation of ['INIT', 'FINALIZE', 'association']) await t.test(`${operation} HTTP ${status}`, async (t) => {
       const f = fixture(t);
       const options = { status, body: 'temporary service failure' };

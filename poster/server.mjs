@@ -97,7 +97,7 @@ async function writeLanguagePreference() {
   try {
     prefs = JSON.parse(await fs.readFile(file, 'utf8'));
   } catch {
-    // Missing or unreadable preferences fall back to Chromium defaults.
+    // Rebuild missing or unreadable preferences with only the language settings.
   }
   prefs.intl = { ...prefs.intl, accept_languages: LANGUAGES.join(','), selected_languages: LANGUAGES.join(',') };
   await fs.mkdir(path.dirname(file), { recursive: true });
@@ -466,7 +466,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
 
       const release = new AbortController();
       const response = waitForPostResponse(page, { signal: AbortSignal.any([signal, release.signal]) });
-      // Not awaited when the click fails; an unhandled rejection would crash the process.
+      // A failed click can leave this rejection unawaited.
       response.catch(() => {});
       try {
         await humanClick(page, button, {
@@ -483,8 +483,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         if (err.stage === 'captions') {
           caption.captions = 'none';
           caption.fallbackReason = `caption upload: ${err.message}`;
-          // Persist the downgrade, but keep clicked=true: reconciliation must
-          // precede the next request rather than immediately posting again.
+          // Keep clicked=true so the retry checks X before publishing again.
           log('video without captions on retry:', caption.fallbackReason);
         }
         throw err;
@@ -504,7 +503,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
       }
     }
     if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
-    // A post-click failure requires reconciliation before retrying.
     if (clicked) err.message += ' (after clicking post; it may be on X)';
     // Leave no half-written composer behind for the next post.
     try {

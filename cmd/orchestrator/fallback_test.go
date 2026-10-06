@@ -7,6 +7,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"os"
 	"strings"
 	"testing"
 	"time"
@@ -80,7 +81,13 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 				video:   true,
 				content: fallbackContent,
 				post: func(w http.ResponseWriter, r *http.Request, item feed.Item) {
-					testutil.Equal(t, reloadPollState(t, f).Items[item.GUID].Status, state.StatusPosting)
+					saved, err := state.Load(f.app.cfg.StateFile)
+					if err != nil {
+						t.Error(err)
+						http.Error(w, "read state", http.StatusInternalServerError)
+						return
+					}
+					testutil.Equal(t, saved.Items[item.GUID].Status, state.StatusPosting)
 					current := "video_captions"
 					if r.URL.Path == "/post-video" {
 						if r.Header.Get("X-Post-Captions") == "none" {
@@ -91,7 +98,7 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 							Text  string
 							Image any
 						}
-						testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+						testutil.Equal(t, json.NewDecoder(r.Body).Decode(&payload), nil)
 						testutil.Equal(t, payload.Text, postText(&item))
 						current = "text"
 						if payload.Image != nil {
@@ -215,7 +222,7 @@ func TestCancellationDuringMediaPreparationStopsFallback(t *testing.T) {
 func TestFallbackSaveFailureStopsNextPost(t *testing.T) {
 	var f *pollTest
 	f = newPollTest(t, &pollTestOptions{content: fallbackContent, post: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-		blockStateSave(t, f.app.cfg.StateFile)
+		testutil.Equal(t, os.Mkdir(f.app.cfg.StateFile+".tmp", 0o700), nil)
 		testutil.JSON(t, w, 500, map[string]any{"error": "upload failed", "clicked": false, "stage": "image"})
 	}})
 	testutil.ErrorContains(t, f.app.poll(t.Context()), "save fallback state")

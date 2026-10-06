@@ -79,7 +79,7 @@ func TestPollVideoTakesPriority(t *testing.T) {
 							Text  string
 							Image *struct{ Data string }
 						}
-						testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
+						testutil.Equal(t, json.NewDecoder(r.Body).Decode(&payload), nil)
 						testutil.Equal(t, payload.Text, postText(&item))
 						if payload.Image == nil {
 							t.Error("fallback image missing")
@@ -90,10 +90,10 @@ func TestPollVideoTakesPriority(t *testing.T) {
 					testutil.Equal(t, r.URL.Path, "/post-video")
 					testutil.Equal(t, r.Header.Get("Content-Type"), "video/mp4")
 					text, err := base64.StdEncoding.DecodeString(r.Header.Get("X-Post-Text"))
-					testutil.NoError(t, err)
+					testutil.Equal(t, err, nil)
 					testutil.Equal(t, string(text), postText(&item))
 					body, err := io.ReadAll(r.Body)
-					testutil.NoError(t, err)
+					testutil.Equal(t, err, nil)
 					testutil.Equal(t, string(body), string(mp4))
 					if tt.postError != "" {
 						w.WriteHeader(http.StatusInternalServerError)

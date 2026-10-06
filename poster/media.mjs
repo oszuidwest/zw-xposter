@@ -60,7 +60,6 @@ function isMediaUpload(url) {
     && /\/(?:i|1\.1)\/media\/upload\.json$/.test(url.pathname);
 }
 
-// Upload parameters are in the query string or a form-encoded body.
 function uploadParameter(url, request, name) {
   const value = url.searchParams.get(name);
   if (value) return value;
@@ -108,7 +107,7 @@ async function uploadMedia(page, dialog, file, {
     if (info?.state === 'failed') {
       throw new Error(`${kind} processing failed: ${JSON.stringify(info.error || info)}`);
     }
-    // Without processing_info, chunked uploads complete at FINALIZE and simple image uploads in their only response.
+    // Without processing_info, FINALIZE or a simple image response confirms completion.
     const command = uploadParameter(url, res.request(), 'command');
     return info?.state === 'succeeded' || Boolean(id && !info && (command === 'FINALIZE' || (kind === 'image' && !command)));
   }, { timeout: timeoutMs, signal: release.signal });
@@ -139,13 +138,12 @@ export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = ()
   await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
   throwIfCancelled();
   await captions.getByRole('button', { name: CAPTION_DONE }).click();
-  // This confirms selection only: X uploads the SRT after the final Post click.
+  // Selection only: X uploads the SRT after the Post click.
   await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: 60_000 });
   throwIfCancelled();
 }
 
-// Observe deferred media uploads as well as publication. A Post click can fail
-// before CreateTweet is ever sent; do not turn that API error into a timeout.
+// Deferred uploads can fail before CreateTweet; surface their errors without timing out.
 export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
   const requests = new WeakSet();
   const captionIDs = new Set();
@@ -171,27 +169,25 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
     const command = uploadParameter(url, request, 'command');
     const captionInit = command === 'INIT' && uploadParameter(url, request, 'media_category') === 'subtitles';
     const readBody = (async () => {
-      // Successful association/metadata calls normally have an empty body.
-      // Chromium may not expose those bodies; JSON responses can still carry API errors.
+      // Chromium may omit empty success bodies; JSON can still carry API errors.
       const emptySuccess = response.ok() && (subtitleAssociation || metadata) && !response.headers()['content-type']?.includes('json');
       const raw = emptySuccess ? '' : await response.text();
       let body;
-      try { body = JSON.parse(raw); } catch { /* Non-JSON errors retain their status and response text. */ }
+      try { body = JSON.parse(raw); } catch { /* Keep non-JSON error text. */ }
       if (captionInit && response.ok() && body?.media_id_string) captionIDs.add(body.media_id_string);
       return { raw, body };
     })();
     if (captionInit) pendingInits.push(readBody);
     const { raw, body } = await readBody;
-    // Async response predicates can overlap: bind the ID before classifying a later failure.
+    // Predicates overlap: await INIT bodies before matching caption IDs.
     if (!captionInit) await Promise.all(pendingInits);
     const captionUpload = captionInit || captionIDs.has(uploadParameter(url, request, 'media_id'));
 
     const processingFailed = body?.processing_info?.state === 'failed';
     const failure = body?.errors?.length ? body.errors : body?.error || (processingFailed && body.processing_info.error);
     if (response.ok() && !failure && !processingFailed) return false;
-    // Temporary service failures, unknown API errors and account restrictions
-    // do not establish invalid captions and must not discard subtitles.
-    const serviceFailure = response.status() === 429 || response.status() >= 500;
+    // Only definite caption failures may discard subtitles.
+    const serviceFailure = [408, 429].includes(response.status()) || response.status() >= 500;
     let stage = 'service';
     if ([401, 403].includes(response.status())) {
       stage = 'session';
