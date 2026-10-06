@@ -85,9 +85,9 @@ for target in orchestrator node stop; do
         exit 1
     fi
 
-    # Verify user IDs and credential filtering without printing any environment,
-    # then kill the target process.
-    docker exec -i "$container" node --input-type=module - "$target" <<'JS'
+    # Finish assertions before fault injection: fast shutdown can kill docker exec
+    # itself with 137, which must not mask a failed assertion.
+    target_pid=$(docker exec -i "$container" node --input-type=module - "$target" <<'JS'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const target = process.argv[2];
@@ -105,10 +105,16 @@ for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
     pids[role] = Number(pid);
 }
 assert.deepEqual(Object.keys(pids).sort(), ['node', 'orchestrator']);
-if (target !== 'stop') process.kill(pids[target], 'SIGKILL');
+if (target !== 'stop') console.log(pids[target]);
 JS
+    )
     if [[ $target == stop ]]; then
         docker stop --time 25 "$container" >/dev/null
+    else
+        injection_status=0
+        docker exec "$container" bash -c 'kill -KILL "$1"' _ "$target_pid" || injection_status=$?
+        # The container may exit before the kill helper is reaped.
+        if [[ $injection_status != 0 && $injection_status != 137 ]]; then exit "$injection_status"; fi
     fi
     code=$(timeout 24 docker wait "$container")
     if [[ $target == stop ]]; then [[ $code == 0 ]]; else [[ $code != 0 ]]; fi
