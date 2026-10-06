@@ -7,9 +7,6 @@
     "test": "node --test",
     "lint": "eslint ."
   },
-  "dependencies": {
-    "playwright-core": "1.63.0"
-  },
   "devDependencies": {
     "@eslint/js": "10.0.1",
     "eslint": "10.12.0"

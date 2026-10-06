@@ -1,646 +1,20 @@
-// Posts to X through persistent, logged-in Chromium.
-//
-// API:
-//   GET /health -> 200 once Chromium has launched and HTTP is listening
-//   GET /ready -> 200 after a recent successful session check
-//   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
-//   POST /post -> publish or dry-run; errors include whether the post was clicked
-//   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
-//   POST /delete -> delete an own post by numeric ID; 200 only after X confirms
-
+// Local HTTP contract for the Go orchestrator; X transport lives in x-client.mjs.
 import http from 'node:http';
-import fs from 'node:fs/promises';
-import path from 'node:path';
-import { setInterval } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
-import { chromium } from 'playwright-core';
-import xUI from './x-ui.json' with { type: 'json' };
-import { pruneScreenshots } from './debug.mjs';
-import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText, waitForPostResponse } from './media.mjs';
-import { prepareSubtitles } from './subtitles.mjs';
-import {
-  sessionCheckDelay,
-  sessionHealth,
-} from './health.mjs';
-import {
-  createTimelineCollector,
-  isFirstUserTweetsPage,
-  isUserTimelineResponse,
-  parseCreateTweetResponse,
-  parseDeleteTweetResponse,
-  postErrorResponse,
-} from './timeline.mjs';
+import { XClient } from './x-client.mjs';
+import { publish } from './publication.mjs';
+import { MAX_VIDEO_BYTES, receiveVideo, videoPostText } from './media.mjs';
+import { sessionCheckDelay, sessionHealth } from './health.mjs';
+import { postErrorResponse } from './timeline.mjs';
 
-const PORT = Number(process.env.PORT || 8081);
-const DATA_DIR = process.env.DATA_DIR || '/data';
-const USERNAME = process.env.X_USERNAME;
-const PASSWORD = process.env.X_PASSWORD;
-const AUTH_TOKEN = process.env.X_AUTH_TOKEN || '';
-// Answer for X's "unusual login activity" check (email address or phone number).
-const VERIFICATION = process.env.X_VERIFICATION || '';
-// Default to headed Chromium on the container's virtual display.
-const HEADLESS = process.env.HEADLESS === 'true';
-const LANGUAGES = (process.env.BROWSER_LANGUAGES || 'nl-NL,nl,en-US,en').split(',');
-const [WINDOW_WIDTH, WINDOW_HEIGHT] = (process.env.WINDOW_SIZE || '1440x960').split('x').map(Number);
-
-if (import.meta.main && (!USERNAME || !(PASSWORD || AUTH_TOKEN))) {
-  console.error('X_USERNAME and X_PASSWORD or X_AUTH_TOKEN are required');
-  process.exit(1);
-}
-
-const PROFILE_DIR = path.join(DATA_DIR, 'profile');
-const DEBUG_DIR = path.join(DATA_DIR, 'debug');
-const DEBUG_RETENTION_MS = 14 * 24 * 3600_000;
-const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
-const LOGIN_RETRY_MS = 30 * 60_000;
-// Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
-// Reserve response headroom within the Go client's 5/30-minute timeouts;
-// video receipt consumes up to five minutes before this budget starts.
 const POST_TIMEOUT_MS = 4 * 60_000;
 const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
-const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
-const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
-const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
-const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
-const DELETE_MENU = new RegExp(xUI.deleteMenuPattern, 'i');
-
-let context;
-let tab;
-let loggedIn = false;
-let sessionCheckedAt = 0;
-let loginFailedAt = 0;
-let shuttingDown = false;
-
-// Serialize browser work so session checks and posts cannot navigate over each other.
-let queue = Promise.resolve();
-function exclusive(fn) {
-  const run = queue.then(fn);
-  // Release settled values and let the next task run after failures.
-  queue = run.then(() => {}, () => {});
-  return run;
-}
-
-function log(...args) {
-  console.log(new Date().toISOString(), ...args);
-}
-
-function random(min, max) {
-  return min + Math.random() * (max - min);
-}
-
-function pause(minMs, maxMs) {
-  return sleep(random(minMs, maxMs));
-}
-
-// Keep Accept-Language and navigator.languages aligned through Chromium's profile.
-async function writeLanguagePreference() {
-  const file = path.join(PROFILE_DIR, 'Default', 'Preferences');
-  let prefs = {};
-  try {
-    prefs = JSON.parse(await fs.readFile(file, 'utf8'));
-  } catch {
-    // Rebuild missing or unreadable preferences with only the language settings.
-  }
-  prefs.intl = { ...prefs.intl, accept_languages: LANGUAGES.join(','), selected_languages: LANGUAGES.join(',') };
-  await fs.mkdir(path.dirname(file), { recursive: true });
-  await fs.writeFile(file, JSON.stringify(prefs));
-}
-
-function pruneDebug() {
-  return pruneScreenshots(DEBUG_DIR, { retentionMs: DEBUG_RETENTION_MS })
-    .catch((err) => log('screenshot cleanup failed:', err.message));
-}
-
-export async function launch() {
-  await fs.mkdir(DEBUG_DIR, { recursive: true });
-  await pruneDebug();
-  await writeLanguagePreference();
-
-  context = await chromium.launchPersistentContext(PROFILE_DIR, {
-    env: { ...process.env, ELEVENLABS_API_KEY: undefined },
-    // Use full Chromium with its native user agent, client hints and platform.
-    channel: 'chromium',
-    headless: HEADLESS,
-    // Let the desktop window determine the viewport dimensions.
-    viewport: null,
-    // Playwright's default flags announce automation (navigator.webdriver, infobar).
-    ignoreDefaultArgs: ['--enable-automation'],
-    args: [
-      '--disable-blink-features=AutomationControlled',
-      `--lang=${LANGUAGES[0]}`,
-      `--window-size=${WINDOW_WIDTH},${WINDOW_HEIGHT}`,
-      '--window-position=0,0',
-      '--no-first-run',
-      '--no-default-browser-check',
-      // Render WebGL through Mesa on the virtual display.
-      ...(HEADLESS ? [] : ['--use-angle=gl', '--ignore-gpu-blocklist']),
-    ],
-  });
-  return context;
-}
-
-async function getTab() {
-  if (tab && !tab.isClosed()) return tab;
-  tab = context.pages().find((p) => !p.isClosed()) || (await context.newPage());
-  for (const extra of context.pages()) {
-    if (extra !== tab) await extra.close().catch(() => {});
-  }
-  tab.setDefaultTimeout(30_000);
-  return tab;
-}
-
-async function screenshot(page, name) {
-  const file = path.join(DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${name}.png`);
-  await page.screenshot({ path: file }).catch(() => {});
-  return file;
-}
-
-// Retain each page's last click target for the next mouse path.
-const mouse = new WeakMap();
-
-// Click a random interior point after a curved mouse move.
-// Check cancellation before mouse-down and mouse-up; onPress marks the final release attempt.
-async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress = () => {} } = {}) {
-  await locator.scrollIntoViewIfNeeded();
-  const box = await locator.boundingBox();
-  if (!box) throw new Error('element has no bounding box');
-
-  const to = {
-    x: box.x + box.width * random(0.3, 0.7),
-    y: box.y + box.height * random(0.3, 0.7),
-  };
-  // Raw mouse clicks bypass locator actionability checks; reject covering elements.
-  const covering = await locator.evaluate((el, { x, y }) => {
-    const top = document.elementFromPoint(x, y);
-    if (!top || el.contains(top)) return null;
-    return `${top.tagName.toLowerCase()} "${(top.innerText || top.getAttribute('aria-label') || '').trim().slice(0, 60)}"`;
-  }, to);
-  if (covering) throw new Error(`element is covered by ${covering}`);
-  const from = mouse.get(page) || { x: random(100, 600), y: random(100, 500) };
-  const bend = { x: random(-80, 80), y: random(-60, 60) };
-  const steps = Math.round(random(18, 35));
-  for (let i = 1; i <= steps; i++) {
-    const t = i / steps;
-    // Ease in-out, plus a bend that is largest halfway.
-    const e = t < 0.5 ? 2 * t * t : 1 - (-2 * t + 2) ** 2 / 2;
-    const arc = Math.sin(Math.PI * t);
-    await page.mouse.move(from.x + (to.x - from.x) * e + bend.x * arc, from.y + (to.y - from.y) * e + bend.y * arc);
-    await pause(6, 18);
-  }
-  mouse.set(page, to);
-
-  await pause(80, 250);
-  throwIfCancelled();
-  await page.mouse.down();
-  await pause(40, 120);
-  try {
-    throwIfCancelled();
-  } catch (err) {
-    // Release away from the element so a cancel during mouse-down cannot click it.
-    await page.mouse.move(0, 0).catch(() => {});
-    await page.mouse.up().catch(() => {});
-    throw err;
-  }
-  onPress();
-  await page.mouse.up();
-}
-
-async function humanType(page, text) {
-  for (const char of text) {
-    await page.keyboard.type(char);
-    if (char === ' ') await pause(90, 260);
-    else if (/[.,:;!?’'"]/.test(char)) await pause(120, 320);
-    else await pause(35, 110);
-    if (Math.random() < 0.02) await pause(400, 1100);
-  }
-}
-
-async function dismissOverlay(page, button, message) {
-  if (!(await button.isVisible().catch(() => false))) return;
-  await pause(700, 1800);
-  await humanClick(page, button);
-  await button.waitFor({ state: 'hidden', timeout: 10_000 }).catch(() => {});
-  log(message);
-}
-
-// X's one-time video notice can cover the caption and Post buttons.
-function acknowledgeNotice(page) {
-  return dismissOverlay(page,
-    page.getByRole('dialog').getByRole('button', { name: NOTICE_ACKNOWLEDGE }),
-    'acknowledged an X notice');
-}
-
-async function isLoggedIn(page) {
-  await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-  const nav = page.locator('[data-testid="SideNav_AccountSwitcher_Button"]');
-  const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"]');
-  await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
-  // The banner renders a moment after the page.
-  await pause(1000, 2000);
-  await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
-  return nav.isVisible();
-}
-
-async function checkSession(page) {
-  let active = false;
-  try {
-    active = await isLoggedIn(page);
-  } finally {
-    loggedIn = active;
-    sessionCheckedAt = Date.now();
-  }
-  if (active) loginFailedAt = 0;
-  return active;
-}
-
-async function pageMessage(page) {
-  const text = await page.locator('body').innerText().catch(() => '');
-  const lines = text.split('\n').filter((line) => LOGIN_ERROR.test(line));
-  return [...new Set(lines)].join(' / ') || 'no error message on page';
-}
-
-async function login(page) {
-  log('logging in as', USERNAME);
-  await page.goto('https://x.com/i/flow/login', { waitUntil: 'domcontentloaded' });
-
-  const user = page.locator('input[name="username_or_email"]');
-  await user.waitFor();
-  await pause(800, 2000);
-  await humanClick(page, user);
-  await humanType(page, USERNAME);
-  await pause(300, 900);
-  await page.keyboard.press('Enter');
-
-  const password = page.locator('input[name="password"]:not([inert])');
-  // X sometimes asks for the email address or phone number before the password.
-  const challenge = page.locator('input[data-testid="ocfEnterTextTextInput"], input[name="text"]');
-  try {
-    await password.or(challenge).first().waitFor();
-  } catch {
-    throw new Error(`login stuck after username: ${await pageMessage(page)} (screenshot: ${await screenshot(page, 'login')})`);
-  }
-  if (!(await password.isVisible())) {
-    if (!VERIFICATION) {
-      throw new Error(`X asks for verification; set X_VERIFICATION (screenshot: ${await screenshot(page, 'verification')})`);
-    }
-    await pause(600, 1500);
-    await humanClick(page, challenge.first());
-    await humanType(page, VERIFICATION);
-    await page.keyboard.press('Enter');
-    await password.waitFor();
-  }
-
-  await pause(600, 1500);
-  await humanClick(page, password);
-  await humanType(page, PASSWORD);
-  await pause(300, 900);
-  await page.keyboard.press('Enter');
-
-  try {
-    await page.waitForURL(/x\.com\/home/, { timeout: 30_000 });
-  } catch {
-    throw new Error(`login did not reach /home: ${await pageMessage(page)} (screenshot: ${await screenshot(page, 'login')})`);
-  }
-  log('logged in');
-}
-
-async function ensureLoggedIn(page) {
-  if (await checkSession(page)) {
-    return;
-  }
-  if (AUTH_TOKEN) {
-    log('restoring session from X_AUTH_TOKEN');
-    await context.addCookies([{
-      name: 'auth_token',
-      value: AUTH_TOKEN,
-      domain: '.x.com',
-      path: '/',
-      expires: Math.floor(Date.now() / 1000) + 365 * 24 * 3600,
-      httpOnly: true,
-      secure: true,
-      sameSite: 'None',
-    }]);
-    if (await checkSession(page)) {
-      return;
-    }
-    log('X_AUTH_TOKEN is not (or no longer) valid');
-  }
-  if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
-  const wait = loginBlockedUntil() - Date.now();
-  if (wait > 0) throw new Error(`logged out; previous login failed, next attempt in ${Math.ceil(wait / 60_000)} min`);
-  try {
-    await login(page);
-    if (!(await checkSession(page))) throw new Error(`still logged out after login (screenshot: ${await screenshot(page, 'session')})`);
-  } catch (err) {
-    loginFailedAt = Date.now();
-    throw err;
-  }
-}
-
-function loginBlockedUntil() {
-  return loginFailedAt > 0 ? loginFailedAt + LOGIN_RETRY_MS : 0;
-}
-
-async function runSessionChecks() {
-  while (!shuttingDown) {
-    await sleep(sessionCheckDelay());
-    if (shuttingDown) return;
-    await exclusive(async () => {
-      // Checked in the queue, as a login may have failed while this waited.
-      if (loginBlockedUntil() > Date.now()) {
-        log('background session check skipped during login backoff');
-        return;
-      }
-      try {
-        await ensureLoggedIn(await getTab());
-        log('background session check succeeded');
-      } catch (err) {
-        log('background session check failed:', err.message);
-      }
-    });
-  }
-}
-
-// Abandon disconnected requests before the click; no client remains to record the outcome.
-// videoFile is server-owned; request payloads must never supply local paths.
-async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFile) {
-  const throwIfGone = () => signal.throwIfAborted();
-  // The request may have waited in the queue behind other browser work.
-  throwIfGone();
-  let { srt, ...caption } = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
-  if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
-  throwIfGone();
-  let page;
-  let clicked = false;
-  let cancelledPage;
-  const closeOnCancel = () => { cancelledPage = page.close().catch(() => {}); };
-  // Fallback requires verified cleanup of failed attachments and caption dialogs.
-  const resetComposer = async () => {
-    throwIfGone();
-    await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-    await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
-    if (await page.locator(`[role="dialog"]:visible, ${ANY_ATTACHMENT}`).count()) {
-      throw new Error('composer recovery could not be verified');
-    }
-    throwIfGone();
-  };
-  const mediaOperation = async (stage, operation) => {
-    throwIfGone();
-    try {
-      await operation();
-    } catch (err) {
-      throwIfGone();
-      // Closed browsers and explicitly identified session failures are not media failures.
-      if (!page.isClosed() && !err.stage) err.stage = stage;
-      throw err;
-    }
-    throwIfGone();
-  };
-  try {
-    page = await getTab();
-    throwIfGone();
-    signal.addEventListener('abort', closeOnCancel, { once: true });
-    await ensureLoggedIn(page);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      throwIfGone();
-      await pause(2000, 5000);
-      if (Math.random() < 0.6) {
-        await page.mouse.wheel(0, random(200, 700));
-        await pause(1000, 3000);
-      }
-
-      await humanClick(page, page.locator('[data-testid="SideNav_NewTweet_Button"]'));
-      const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
-      const box = dialog.locator('[data-testid="tweetTextarea_0"]').first();
-      await box.waitFor();
-      if (await dialog.locator(ANY_ATTACHMENT).count()) {
-        throw new Error('new composer contains stale media');
-      }
-      await pause(500, 1500);
-      await humanClick(page, box);
-      await humanType(page, text);
-
-      if (videoFile) {
-        await mediaOperation('video', () => uploadVideo(page, dialog, videoFile, { throwIfCancelled: throwIfGone }));
-        await acknowledgeNotice(page);
-        if (srt) {
-          try {
-            await mediaOperation('captions', () => uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone }));
-          } catch (err) {
-            if (err.stage !== 'captions') throw err;
-            caption.captions = 'none';
-            caption.fallbackReason = `caption attachment: ${err.message}`;
-            log('video without captions:', caption.fallbackReason);
-            srt = undefined;
-            await resetComposer();
-            continue; // One clean re-upload; no repeated transcription or caption attempt.
-          }
-        }
-      } else if (image) {
-        await pause(800, 2000);
-        await mediaOperation('image', () => uploadImage(page, dialog, image, { throwIfCancelled: throwIfGone }));
-      }
-
-      const button = dialog.locator('[data-testid="tweetButton"]');
-      await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-      // Let the composer settle before clicking or capturing a dry run.
-      await pause(1500, 4000);
-      await acknowledgeNotice(page);
-      throwIfGone();
-      const videos = await dialog.locator(ATTACHMENT.video).count();
-      const images = await dialog.locator(ATTACHMENT.image).count();
-      if (videos !== (videoFile ? 1 : 0) || images !== (image ? 1 : 0)) {
-        throw new Error('composer media state changed before publication');
-      }
-      if (videoFile) {
-        const attached = await dialog.getByText(CAPTION_ATTACHED).isVisible();
-        if (attached !== (caption.captions === 'attached')) throw new Error('composer caption state changed before publication');
-      }
-
-      if (dryRun) {
-        const file = await screenshot(page, 'dry-run');
-        await page.keyboard.press('Escape');
-        // "Save post?" sheet: confirm saves a draft, cancel discards.
-        await humanClick(page, page.locator('[data-testid="confirmationSheetCancel"]'));
-        await dialog.waitFor({ state: 'detached', timeout: 15_000 });
-        return { dryRun: true, screenshot: file };
-      }
-
-      const release = new AbortController();
-      const response = waitForPostResponse(page, { signal: AbortSignal.any([signal, release.signal]) });
-      // A failed click can leave this rejection unawaited.
-      response.catch(() => {});
-      try {
-        await humanClick(page, button, {
-          throwIfCancelled: throwIfGone,
-          onPress: () => {
-            clicked = true;
-          },
-        });
-        const body = await (await response).json();
-        const result = parseCreateTweetResponse(body, USERNAME);
-        await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
-        return { ...result, ...caption };
-      } catch (err) {
-        if (err.stage === 'captions') {
-          caption.captions = 'none';
-          caption.fallbackReason = `caption upload: ${err.message}`;
-          // Keep clicked=true so the retry checks X before publishing again.
-          log('video without captions on retry:', caption.fallbackReason);
-        }
-        throw err;
-      } finally {
-        release.abort();
-      }
-    }
-    throw new Error('composer recovery exhausted');
-  } catch (cause) {
-    // AbortSignal throws a DOMException with a read-only message.
-    const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
-    if (page && clicked) {
-      const banner = page.getByText(MEDIA_UPLOAD_FAILED);
-      if (await banner.isVisible().catch(() => false)) {
-        const message = await banner.innerText({ timeout: 1000 }).catch(() => '');
-        if (message) err.message += ` (X: ${message})`;
-      }
-    }
-    if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
-    if (clicked) err.message += ' (after clicking post; it may be on X)';
-    // Leave no half-written composer behind for the next post.
-    try {
-      await resetComposer();
-    } catch (recovery) {
-      err.stage = 'service';
-      err.message += ` (recovery failed: ${recovery.message})`;
-    }
-    throw err;
-  } finally {
-    signal.removeEventListener('abort', closeOnCancel);
-    // Do not release the browser queue while cancellation is still closing the tab.
-    await cancelledPage;
-  }
-}
-
-function isDeleteTweet(url) {
-  return new URL(url).pathname.endsWith('/DeleteTweet');
-}
-
-function deletedTweetID(request) {
-  try {
-    return request.postDataJSON()?.variables?.tweet_id;
-  } catch {
-    return undefined;
-  }
-}
-
-// Only own posts offer Delete, and the route guard blocks a DeleteTweet for any other ID.
-async function deletePost(id, signal) {
-  const throwIfGone = () => signal.throwIfAborted();
-  throwIfGone();
-  const page = await getTab();
-  const blocked = Promise.withResolvers();
-  blocked.promise.catch(() => {});
-  const guard = (route) => {
-    const target = deletedTweetID(route.request());
-    if (target === id) return route.fallback();
-    blocked.reject(new Error(`blocked a DeleteTweet request for ${target || 'an unknown post'} instead of ${id}`));
-    return route.abort();
-  };
-  await page.route(isDeleteTweet, guard);
-  try {
-    await ensureLoggedIn(page);
-    throwIfGone();
-    await page.goto(`https://x.com/${USERNAME}/status/${id}`, { waitUntil: 'domcontentloaded' });
-    // The timestamp link identifies the focal post among replies and quotes.
-    const post = page.locator('article').filter({ has: page.locator(`a[href$="/status/${id}"] time`) }).first();
-    await post.waitFor();
-    await pause(1500, 3500);
-    await humanClick(page, post.locator('[data-testid="caret"]'));
-    const item = page.getByRole('menuitem', { name: DELETE_MENU });
-    await item.waitFor({ timeout: 10_000 });
-    await pause(500, 1500);
-    await humanClick(page, item);
-    const confirm = page.locator('[data-testid="confirmationSheetConfirm"]');
-    await confirm.waitFor({ timeout: 10_000 });
-    await pause(700, 1800);
-    const response = page.waitForResponse((r) => isDeleteTweet(r.url()) && deletedTweetID(r.request()) === id, { timeout: 30_000, signal });
-    response.catch(() => {});
-    await humanClick(page, confirm, { throwIfCancelled: throwIfGone });
-    parseDeleteTweetResponse(await (await Promise.race([response, blocked.promise])).json());
-  } catch (err) {
-    err.message += ` (screenshot: ${await screenshot(page, 'delete')})`;
-    throw err;
-  } finally {
-    await page.unroute(isDeleteTweet, guard).catch(() => {});
-  }
-}
-
-async function recentPosts(hours) {
-  const page = await getTab();
-  await ensureLoggedIn(page);
-  const twid = (await context.cookies('https://x.com')).find((c) => c.name === 'twid')?.value || '';
-  const ownId = decodeURIComponent(twid).replace(/^u=/, '');
-  const cutoff = Date.now() - hours * 3600_000;
-
-  const timeline = createTimelineCollector({ ownId, username: USERNAME, cutoff });
-  const pending = [];
-  const onResponse = (r) => {
-    if (!isUserTimelineResponse(r.url())) return;
-    if (!r.ok()) {
-      timeline.fail(`UserTweets returned HTTP ${r.status()}`);
-      return;
-    }
-    const firstPage = isFirstUserTweetsPage(r.url());
-    pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
-  };
-
-  page.on('response', onResponse);
-  try {
-    await pause(1000, 2500);
-    await humanClick(page, page.locator('[data-testid="AppTabBar_Profile_Link"]'));
-    await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
-    await page.locator('article').first().waitFor();
-    await pause(1500, 3000);
-    // Bound scrolling; reject the request if the window remains incomplete.
-    for (let i = 0; i < 8; i++) {
-      await Promise.all(pending);
-      if (timeline.complete() || timeline.failed()) break;
-      await page.mouse.wheel(0, random(1500, 2500));
-      await pause(1500, 3000);
-    }
-    await Promise.all(pending);
-  } finally {
-    page.off('response', onResponse);
-  }
-
-  // Fail the request: partial history cannot rule out an existing post.
-  const reason = timeline.incompleteReason();
-  if (reason) throw new Error(`recent posts incomplete: ${reason} (screenshot: ${await screenshot(page, 'recent')})`);
-  return timeline.result();
-}
+const LOGIN_RETRY_MS = 30 * 60_000;
+const log = (...args) => console.log(new Date().toISOString(), ...args);
 
 function send(res, status, body) {
-  res.writeHead(status, { 'content-type': 'application/json' });
-  res.end(JSON.stringify(body));
-}
-
-// Abort browser work when the client disconnects or the budget is spent.
-function requestSignal(res, timeoutMs) {
-  const controller = new AbortController();
-  if (res.destroyed) controller.abort();
-  else res.once('close', () => controller.abort());
-  return AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]);
-}
-
-async function postAndSend(res, post, videoFile) {
-  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
-  // Transcribe inside the queue so posts keep their request order.
-  // The budget covers queueing, transcription, at most two uploads and confirmation.
-  const signal = requestSignal(res, videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS);
-  const result = await exclusive(() => createPost(post, signal, videoFile));
-  log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
-  send(res, 200, result);
+  if (!res.destroyed) res.writeHead(status, { 'content-type': 'application/json' }).end(JSON.stringify(body));
 }
 
 async function readJSON(req) {
@@ -654,94 +28,107 @@ async function readJSON(req) {
   return JSON.parse(Buffer.concat(chunks).toString('utf8'));
 }
 
-export const server = http.createServer(async (req, res) => {
-  try {
-    const url = new URL(req.url, 'http://localhost');
-    if (req.method === 'GET' && url.pathname === '/health') {
-      return send(res, 200, {});
+export function createPosterServer({ client, transcribe, logger = log } = {}) {
+  let queue = Promise.resolve();
+  let loggedIn = false, sessionCheckedAt = 0, blockedUntil = 0;
+  const shutdown = new AbortController();
+  const exclusive = (fn) => { const run = queue.then(fn); queue = run.catch(() => {}); return run; };
+  const requestSignal = (res, timeoutMs) => {
+    const controller = new AbortController();
+    if (res.destroyed) controller.abort();
+    else res.once('close', () => controller.abort());
+    return AbortSignal.any([controller.signal, shutdown.signal, AbortSignal.timeout(timeoutMs)]);
+  };
+  async function authenticated(signal, force = false) {
+    signal.throwIfAborted();
+    if (blockedUntil > Date.now()) throw Object.assign(new Error('X session/account is in backoff; wait, or update X_AUTH_TOKEN and restart if expired'), { stage: 'session' });
+    try {
+      await client.ensureSession(signal, { force });
+      loggedIn = true; sessionCheckedAt = Date.now(); blockedUntil = 0;
+    } catch (error) {
+      loggedIn = false; sessionCheckedAt = Date.now();
+      if (error.stage === 'session') blockedUntil = Date.now() + LOGIN_RETRY_MS;
+      throw error;
     }
-    if (req.method === 'GET' && url.pathname === '/ready') {
-      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil() });
-      return send(res, status.ready ? 200 : 503, status.body);
-    }
-    if (req.method === 'GET' && url.pathname === '/recent') {
-      const hours = Number(url.searchParams.get('hours') || 48);
-      if (!(hours > 0 && hours <= MAX_RECENT_HOURS)) return send(res, 400, { error: `hours must be between 0 and ${MAX_RECENT_HOURS}` });
-      const result = await exclusive(() => recentPosts(hours));
-      log(`read ${result.posts.length} posts from the last ${hours}h`);
-      return send(res, 200, result);
-    }
-    if (req.method === 'POST' && url.pathname === '/post') {
-      const payload = await readJSON(req);
-      if (payload.videoFile) return send(res, 400, { error: 'use /post-video to upload a video' });
-      if (typeof payload.text !== 'string' || !payload.text.trim()) {
-        return send(res, 400, { error: 'text is required' });
-      }
-      if (payload.image && (!payload.image.mime || !payload.image.data)) {
-        return send(res, 400, { error: 'image needs mime and data' });
-      }
-      return await postAndSend(res, payload);
-    }
-    if (req.method === 'POST' && url.pathname === '/delete') {
-      const { id } = await readJSON(req);
-      if (typeof id !== 'string' || !/^\d+$/.test(id)) return send(res, 400, { error: 'id must be a numeric post ID' });
-      log('deleting post', id);
-      const signal = requestSignal(res, POST_TIMEOUT_MS);
-      await exclusive(() => deletePost(id, signal));
-      log('deleted post', id);
-      return send(res, 200, { deleted: id });
-    }
-    if (req.method === 'POST' && url.pathname === '/post-video') {
-      let text;
-      try {
-        if (req.headers['content-type'] !== 'video/mp4') throw new Error('video/mp4 is required');
-        if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
-        text = videoPostText(req.headers['x-post-text']);
-        if (req.headers['x-post-captions'] && req.headers['x-post-captions'] !== 'none') throw new Error('X-Post-Captions must be none or absent');
-      } catch (err) {
-        return send(res, 400, postErrorResponse(err));
-      }
-      const video = await receiveVideo(req);
-      try {
-        return await postAndSend(res, { text, skipCaptions: req.headers['x-post-captions'] === 'none' }, video.file);
-      } finally {
-        await video.cleanup().catch((err) => log('video cleanup failed:', err.message));
-      }
-    }
-    send(res, 404, { error: 'not found' });
-  } catch (err) {
-    log('error:', err.message);
-    send(res, 500, postErrorResponse(err));
   }
-});
+  async function post(res, payload, videoFile) {
+    const signal = requestSignal(res, videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS);
+    const result = await exclusive(async () => {
+      if (!payload.dryRun) await authenticated(signal);
+      return publish(client, payload, signal, videoFile, transcribe);
+    });
+    logger(result.dryRun ? 'dry run completed' : 'posted', result.url || '', result.fallbackReason || '');
+    return result;
+  }
+  const server = http.createServer(async (req, res) => {
+    try {
+      const url = new URL(req.url, 'http://localhost');
+      if (req.method === 'GET' && url.pathname === '/health') return send(res, 200, {});
+      if (req.method === 'GET' && url.pathname === '/ready') {
+        const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil });
+        return send(res, status.ready ? 200 : 503, status.body);
+      }
+      if (req.method === 'GET' && url.pathname === '/recent') {
+        const hours = Number(url.searchParams.get('hours') || 48);
+        if (!(hours > 0 && hours <= MAX_RECENT_HOURS)) return send(res, 400, { error: `hours must be between 0 and ${MAX_RECENT_HOURS}` });
+        const signal = requestSignal(res, POST_TIMEOUT_MS);
+        return send(res, 200, await exclusive(async () => { await authenticated(signal); return client.recent(hours, signal); }));
+      }
+      if (req.method === 'POST' && url.pathname === '/post') {
+        const payload = await readJSON(req);
+        if (!payload || payload.videoFile) return send(res, 400, { error: 'use /post-video to upload a video' });
+        if (typeof payload.text !== 'string' || !payload.text.trim()) return send(res, 400, { error: 'text is required' });
+        if (payload.image && (!['image/jpeg', 'image/png', 'image/webp', 'image/gif'].includes(payload.image.mime) || typeof payload.image.data !== 'string' || !payload.image.data)) return send(res, 400, { error: 'image needs a supported mime and base64 data' });
+        if (payload.image && Buffer.from(payload.image.data, 'base64').toString('base64') !== payload.image.data) return send(res, 400, { error: 'invalid base64 image' });
+        return send(res, 200, await post(res, payload));
+      }
+      if (req.method === 'POST' && url.pathname === '/delete') {
+        const { id } = await readJSON(req);
+        if (typeof id !== 'string' || !/^\d{1,25}$/.test(id)) return send(res, 400, { error: 'id must be a numeric post ID' });
+        const signal = requestSignal(res, POST_TIMEOUT_MS);
+        await exclusive(async () => { await authenticated(signal); await client.deletePost(id, signal); });
+        logger('deleted post', id);
+        return send(res, 200, { deleted: id });
+      }
+      if (req.method === 'POST' && url.pathname === '/post-video') {
+        let text;
+        try {
+          if (req.headers['content-type'] !== 'video/mp4') throw new Error('video/mp4 is required');
+          if (Number(req.headers['content-length']) > MAX_VIDEO_BYTES) throw new Error('video is too large');
+          text = videoPostText(req.headers['x-post-text']);
+          if (req.headers['x-post-captions'] && req.headers['x-post-captions'] !== 'none') throw new Error('X-Post-Captions must be none or absent');
+        } catch (error) { return send(res, 400, postErrorResponse(error)); }
+        const video = await receiveVideo(req);
+        let result;
+        try { result = await post(res, { text, skipCaptions: req.headers['x-post-captions'] === 'none' }, video.file); }
+        finally { await video.cleanup().catch((error) => logger('video cleanup failed:', error.message)); }
+        return send(res, 200, result);
+      }
+      send(res, 404, { error: 'not found' });
+    } catch (error) {
+      if (error.stage === 'session') { loggedIn = false; sessionCheckedAt = Date.now(); if (blockedUntil <= Date.now()) blockedUntil = Date.now() + LOGIN_RETRY_MS; }
+      logger('error:', error.message);
+      send(res, 500, postErrorResponse(error));
+    }
+  });
+  return {
+    server,
+    checkSession: () => exclusive(() => authenticated(AbortSignal.any([shutdown.signal, AbortSignal.timeout(POST_TIMEOUT_MS)]), true)),
+    async close() { shutdown.abort(); server.closeAllConnections(); await new Promise((resolve) => server.close(resolve)); await queue; },
+  };
+}
 
 if (import.meta.main) {
-  await launch();
-  context.on('close', () => {
-    if (shuttingDown) return;
-    log('browser context closed unexpectedly, exiting');
-    process.exit(1);
-  });
-  setInterval(pruneDebug, DEBUG_PRUNE_INTERVAL_MS);
-  // Serve passive health checks during login; browser work queues behind it.
-  server.listen(PORT, '127.0.0.1', () => log(`poster listening on 127.0.0.1:${PORT}, headless: ${HEADLESS}`));
-  exclusive(async () => {
-    const page = await getTab();
-    try {
-      await ensureLoggedIn(page);
-      log('session ready');
-    } catch (err) {
-      log('initial login failed:', err.message, `(screenshot: ${await screenshot(page, 'startup')})`);
+  const client = new XClient({ username: process.env.X_USERNAME, authToken: process.env.X_AUTH_TOKEN, userAgent: process.env.X_USER_AGENT });
+  const app = createPosterServer({ client });
+  const stop = new AbortController();
+  app.server.listen(Number(process.env.PORT || 8081), '127.0.0.1', () => log('HTTP poster listening on', app.server.address().port));
+  (async () => {
+    while (!stop.signal.aborted) {
+      try { await app.checkSession(); log('X session ready'); }
+      catch (error) { log('session check failed:', error.message); }
+      await sleep(sessionCheckDelay(), undefined, { signal: stop.signal });
     }
-  });
-  runSessionChecks().catch((err) => log('session checker stopped:', err.message));
-
-  for (const signal of ['SIGINT', 'SIGTERM']) {
-    process.on(signal, async () => {
-      shuttingDown = true;
-      server.close();
-      await context.close().catch(() => {});
-      process.exit(0);
-    });
-  }
+  })().catch((error) => { if (!stop.signal.aborted) log('session checker stopped:', error.message); });
+  for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, async () => { stop.abort(); await app.close(); });
 }

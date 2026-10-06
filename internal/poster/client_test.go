@@ -27,7 +27,7 @@ func TestClientRecent(t *testing.T) {
 	}{
 		{name: "complete timeline", fixture: "recent-complete.json", lookback: 24*time.Hour + time.Minute, hours: "25", wantPosts: 2},
 		{name: "incomplete timeline", fixture: "recent-incomplete.json", lookback: 24*time.Hour + time.Minute, hours: "25", wantErr: true},
-		// Pins the Go side of the limit; browser.integration.mjs pins the poster side.
+		// Pins the Go side of the limit; server.test.mjs pins the poster side.
 		{name: "maximum lookback", lookback: MaxLookback, hours: "336"},
 	}
 	for _, tt := range tests {

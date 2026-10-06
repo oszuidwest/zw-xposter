@@ -650,7 +650,7 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 		}
 		if a.cfg.DryRun {
 			// The API key is deliberately only passed to the poster process.
-			log.Info("dry run: predicted post; captions, upload and browser outcome unverified", "text", text, "format", entry.Format, "fallback_reason", entry.FallbackReason)
+			log.Info("dry run: predicted post; captions, upload and X API outcome unverified", "text", text, "format", entry.Format, "fallback_reason", entry.FallbackReason)
 			closeVideo()
 			entry.Status = state.StatusPosted // in-memory preview only
 			return "", a.record(item.GUID, entry)

@@ -1,7 +1,6 @@
 #!/bin/bash
 # Disposable containers only: overwrites the applications with startup probes.
 set -euo pipefail
-export HEADLESS=true
 mkdir -p /tmp/bin
 export PATH="/tmp/bin:$PATH"
 
@@ -23,7 +22,7 @@ chmod +x /tmp/bin/node /app/orchestrator
 run() {
     local expected=$1 status=0
     shift
-    # Fresh state isolates profile locks inherited by the shutdown watchdog's sleep.
+    # Fresh state isolates poster locks inherited by the shutdown watchdog's sleep.
     DATA_DIR=$(mktemp -d) timeout 120 /app/entrypoint.sh "$@" >/tmp/startup.log 2>&1 || status=$?
     if [[ $status != "$expected" ]]; then
         cat /tmp/startup.log
@@ -37,7 +36,7 @@ run 23 serve -once
 echo 'PASS: both serve modes wait for the poster port and preserve the exit code'
 
 POSTER_DELAY=15 run 23 serve
-echo 'PASS: a slow browser launch does not stop the container'
+echo 'PASS: a slow poster launch does not stop the container'
 
 POSTER_STARTUP=never run 1 serve
 grep -q 'poster did not start' /tmp/startup.log

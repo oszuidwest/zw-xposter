@@ -1,4 +1,4 @@
-// Pure session-health bookkeeping; health handlers never touch the browser.
+// Pure session-health bookkeeping; health handlers never send requests to X.
 
 const SESSION_CHECK_MIN_MS = 30 * 60_000;
 const SESSION_CHECK_MAX_MS = 60 * 60_000;
