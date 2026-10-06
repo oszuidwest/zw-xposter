@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"log/slog"
+	"maps"
 	"net"
 	"net/http"
 	"os"
@@ -39,6 +40,8 @@ const (
 	retryInitial     = 2 * time.Minute
 	retryMaximum     = 30 * time.Minute
 	uncertainMinimum = 5 * time.Minute
+	// maxDeleteAttempts bounds retries before a replaced post needs manual deletion.
+	maxDeleteAttempts = 5
 	// recentMargin is the X history checked beyond MAX_AGE.
 	recentMargin          = 24 * time.Hour
 	alertCheckInterval    = time.Minute
@@ -332,7 +335,7 @@ func (a *app) poll(ctx context.Context) error {
 			return err
 		}
 	}
-	return nil
+	return a.deleteReplacedPosts(ctx, workflow)
 }
 
 // expireUnlisted closes expired retries and uncertain outcomes outside the feed.
@@ -360,7 +363,12 @@ func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 
 func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollState) error {
 	if a.store.Done(item.GUID) {
-		return nil
+		if !a.videoAdded(item, workflow.now) {
+			return nil
+		}
+		if err := a.startReplacement(item); err != nil {
+			return err
+		}
 	}
 	entry := a.store.Items[item.GUID]
 	// The feed is authoritative for listed items' metadata, including replays.
@@ -380,17 +388,17 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		return nil
 	}
 
-	if !workflow.recentLoaded {
-		// A complete timeline check is required to rule out duplicates.
-		recent, err := a.poster.Recent(ctx, workflow.lookback)
-		if err != nil {
-			return fmt.Errorf("check X for existing posts: %w", err)
-		}
-		workflow.recent = recent
-		workflow.recentLoaded = true
-		a.status.RecordXCheck(a.now())
+	if err := a.loadRecent(ctx, workflow); err != nil {
+		return err
 	}
-	if existing := dedupe.Find(item.Link, workflow.recent); existing != nil {
+	recent := workflow.recent
+	if entry.Replaces != nil {
+		// The replaced post links to the same article; only another post can be the video post.
+		recent = slices.DeleteFunc(slices.Clone(recent), func(post poster.Post) bool {
+			return samePost(post.URL, entry.Replaces.PostURL)
+		})
+	}
+	if existing := dedupe.Find(item.Link, recent); existing != nil {
 		slog.Info("already on X, not posting", "title", item.Title, "post", existing.URL)
 		entry.Status = state.StatusPosted
 		entry.PostURL = existing.URL
@@ -407,7 +415,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		}
 	}
 	url, err := a.publish(ctx, item, &entry)
-	if err != nil {
+	if err != nil && !errors.Is(err, errReplacementAbandoned) {
 		return err
 	}
 	if url != "" {
@@ -415,6 +423,156 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	workflow.attempted = true
 	return nil
+}
+
+// loadRecent reads X once per poll. A complete timeline is required to rule out duplicates.
+func (a *app) loadRecent(ctx context.Context, workflow *pollState) error {
+	if workflow.recentLoaded {
+		return nil
+	}
+	recent, err := a.poster.Recent(ctx, workflow.lookback)
+	if err != nil {
+		return fmt.Errorf("check X for existing posts: %w", err)
+	}
+	workflow.recent = recent
+	workflow.recentLoaded = true
+	a.status.RecordXCheck(a.now())
+	return nil
+}
+
+// videoAdded reports whether the feed gained a video for an article that was
+// posted without one, soon enough to replace that post.
+func (a *app) videoAdded(item *feed.Item, now time.Time) bool {
+	entry := a.store.Items[item.GUID]
+	return entry.Status == state.StatusPosted && entry.AwaitingVideo && entry.PostURL != "" &&
+		item.VideoURL != "" && a.cfg.VideoReplaceWindow > 0 &&
+		now.Sub(item.Published) <= a.cfg.VideoReplaceWindow && !a.expired(&entry, now)
+}
+
+// startReplacement saves the earlier post before its video replacement is attempted.
+func (a *app) startReplacement(item *feed.Item) error {
+	entry := a.store.Items[item.GUID]
+	slog.Info("video added after posting; replacing the post", "title", item.Title, "post", entry.PostURL, "video", item.VideoURL)
+	entry.Replaces = &state.Replacement{
+		PostURL:        entry.PostURL,
+		Format:         entry.Format,
+		FallbackReason: entry.FallbackReason,
+		FoundOnX:       entry.FoundOnX,
+		Attempts:       entry.Attempts,
+	}
+	entry.Status = state.StatusRetry
+	entry.PostURL, entry.Format, entry.FallbackReason, entry.LastError = "", "", "", ""
+	entry.FoundOnX, entry.AwaitingVideo = false, false
+	entry.Attempts = 0
+	if err := a.record(item.GUID, &entry); err != nil {
+		return fmt.Errorf("save replacement state: %w", err)
+	}
+	return nil
+}
+
+// errReplacementAbandoned reports that the earlier post was kept instead of a video post.
+var errReplacementAbandoned = errors.New("video replacement abandoned")
+
+// restoreReplaced keeps the earlier post when its video replacement cannot be published.
+func (a *app) restoreReplaced(guid string, entry *state.Entry, reason string) error {
+	old := entry.Replaces
+	slog.Warn("video replacement abandoned; keeping the earlier post", "title", entry.Title, "post", old.PostURL, "reason", reason)
+	entry.Status, entry.PostURL, entry.FoundOnX = state.StatusPosted, old.PostURL, old.FoundOnX
+	entry.Format, entry.FallbackReason, entry.Attempts = old.Format, old.FallbackReason, old.Attempts
+	entry.LastError = "video replacement abandoned: " + reason
+	entry.Replaces = nil
+	if err := a.record(guid, entry); err != nil {
+		return fmt.Errorf("save restored post: %w", err)
+	}
+	return nil
+}
+
+// deleteReplacedPosts removes earlier posts once their video posts are confirmed.
+func (a *app) deleteReplacedPosts(ctx context.Context, workflow *pollState) error {
+	for _, guid := range slices.Sorted(maps.Keys(a.store.Items)) {
+		entry := a.store.Items[guid]
+		if entry.Status != state.StatusPosted || entry.Replaces == nil || workflow.now.Before(entry.Replaces.NextDeleteAt) {
+			continue
+		}
+		if err := a.deleteReplaced(ctx, guid, &entry, workflow); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (a *app) deleteReplaced(ctx context.Context, guid string, entry *state.Entry, workflow *pollState) error {
+	old := entry.Replaces
+	log := slog.With("title", entry.Title, "post", entry.PostURL, "replaced", old.PostURL)
+	if a.cfg.DryRun {
+		log.Info("dry run: the replaced post would be deleted")
+		entry.Replaces = nil // in-memory preview only
+		return a.record(guid, entry)
+	}
+	// Beyond MAX_AGE, the timeline may no longer cover the replaced post.
+	if a.expired(entry, workflow.now) {
+		return a.abandonDelete(guid, entry, "the retry window expired")
+	}
+	if err := a.loadRecent(ctx, workflow); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(workflow.recent, func(post poster.Post) bool { return samePost(post.URL, old.PostURL) }) {
+		if err := a.poster.Delete(ctx, old.PostURL); err != nil {
+			if ctx.Err() != nil {
+				return ctx.Err()
+			}
+			return a.deleteFailed(guid, entry, err)
+		}
+		log.Info("deleted the replaced post")
+	} else {
+		log.Info("replaced post is no longer on X")
+	}
+	entry.Replaces = nil
+	entry.LastError = ""
+	return a.record(guid, entry)
+}
+
+// deleteFailed schedules another check of X, which may show the post was deleted after all.
+func (a *app) deleteFailed(guid string, entry *state.Entry, err error) error {
+	// Copy: the stored entry shares the pointer, and record restores it if saving fails.
+	old := *entry.Replaces
+	entry.Replaces = &old
+	old.DeleteAttempts++
+	entry.LastError = "delete replaced post: " + err.Error()
+	if old.DeleteAttempts >= maxDeleteAttempts {
+		return a.abandonDelete(guid, entry, fmt.Sprintf("%d attempts failed: %v", old.DeleteAttempts, err))
+	}
+	old.NextDeleteAt = a.now().Add(retryDelay(old.DeleteAttempts))
+	slog.Warn("deleting the replaced post failed; will check X and retry", "title", entry.Title, "replaced", old.PostURL,
+		"attempts", old.DeleteAttempts, "next_attempt_at", old.NextDeleteAt, "error", err)
+	return a.record(guid, entry)
+}
+
+func (a *app) abandonDelete(guid string, entry *state.Entry, reason string) error {
+	replaced := entry.Replaces.PostURL
+	entry.LastError = fmt.Sprintf("replaced post %s must be deleted manually: %s", replaced, reason)
+	entry.Replaces = nil
+	slog.Error("replaced post could not be deleted and must be deleted manually", "title", entry.Title, "post", entry.PostURL, "replaced", replaced, "reason", reason)
+	if err := a.record(guid, entry); err != nil {
+		return err
+	}
+	a.alerts.Notify(notify.Event{
+		Key:     "workflow:replaced:" + guid,
+		Summary: "Replaced post needs manual deletion",
+		Details: fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s\nVideo post: %s\nDelete: %s\nReason: %s",
+			guid, entry.Title, entry.Link, entry.PostURL, replaced, reason),
+	})
+	return nil
+}
+
+// samePost compares X post URLs by status ID, which ignores handle spelling.
+func samePost(a, b string) bool {
+	idA, okA := poster.StatusID(a)
+	idB, okB := poster.StatusID(b)
+	if okA && okB {
+		return idA == idB
+	}
+	return a == b
 }
 
 // recentLookback covers MAX_AGE plus a margin and any checkable pending replay.
@@ -442,6 +600,10 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 }
 
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
+	// A confirmed failure published nothing, so the earlier post still stands.
+	if entry.Replaces != nil && entry.Status == state.StatusRetry {
+		return a.restoreReplaced(guid, entry, "the retry window expired")
+	}
 	switch entry.Status {
 	case "": // not in state yet
 		entry.Status = state.StatusMissed
@@ -450,6 +612,9 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
 		entry.LastError = "retry window expired while the outcome was uncertain; the post may already be on X and must be checked manually"
+		if entry.Replaces != nil {
+			entry.LastError += "; the replaced post " + entry.Replaces.PostURL + " is still on X"
+		}
 		if previousError != "" {
 			entry.LastError += ": " + previousError
 		}
@@ -565,6 +730,13 @@ func (a *app) advanceFormat(ctx context.Context, guid string, entry *state.Entry
 	if err := ctx.Err(); err != nil {
 		return err
 	}
+	// A replacement exists only for its video; the earlier post already has the fallback media.
+	if entry.Replaces != nil {
+		if err := a.restoreReplaced(guid, entry, reason); err != nil {
+			return err
+		}
+		return errReplacementAbandoned
+	}
 	slog.Info("media fallback", "title", entry.Title, "from", entry.Format, "to", format, "reason", reason)
 	entry.Format, entry.FallbackReason = format, reason
 	entry.Status = state.StatusRetry
@@ -574,13 +746,22 @@ func (a *app) advanceFormat(ctx context.Context, guid string, entry *state.Entry
 	return nil
 }
 
-// prepareMedia resumes the saved format and only downgrades.
+// prepareMedia resumes the saved format and only downgrades. A video added
+// before the first successful post restarts at the richest format instead.
 func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.Entry) (*article.Image, *article.Video, error) {
-	if entry.Format == "" {
-		entry.Format = state.FormatImage
+	// The video that started a replacement can be removed from the feed again.
+	if entry.Replaces != nil && item.VideoURL == "" {
+		if err := a.restoreReplaced(item.GUID, entry, "the feed no longer lists a video"); err != nil {
+			return nil, nil, err
+		}
+		return nil, nil, errReplacementAbandoned
+	}
+	if entry.Format == "" || (entry.AwaitingVideo && item.VideoURL != "") {
+		entry.Format, entry.FallbackReason = state.FormatImage, ""
 		if item.VideoURL != "" {
 			entry.Format = state.FormatVideoCaptions
 		}
+		entry.AwaitingVideo = item.VideoURL == ""
 	}
 	for {
 		if err := ctx.Err(); err != nil {

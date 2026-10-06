@@ -77,6 +77,8 @@ func TestLoadRejectsUnknownStatus(t *testing.T) {
 		{name: "unknown", entry: `{"status":"mystery"}`, want: `"mystery"`},
 		{name: "unknown format", entry: `{"status":"retry","format":"mystery"}`, want: `"mystery"`},
 		{name: "null", entry: `null`, want: `""`},
+		{name: "replaced post without URL", entry: `{"status":"posted","replaces":{"format":"image"}}`, want: "invalid replaced post"},
+		{name: "replaced post with unknown format", entry: `{"status":"posted","replaces":{"post_url":"https://x.invalid/status/1","format":"mystery"}}`, want: "invalid replaced post"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

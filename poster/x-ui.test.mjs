@@ -15,3 +15,9 @@ test('media upload banners match both languages with or without a period', () =>
   }
   assert.equal(pattern.test(''), false);
 });
+
+test('the post menu Delete item matches both languages exactly', () => {
+  const pattern = new RegExp(xUI.deleteMenuPattern, 'i');
+  for (const label of ['Delete', 'Verwijderen']) assert.equal(pattern.test(label), true);
+  for (const label of ['Delete post?', 'Delete all', 'Bladwijzer verwijderen', '']) assert.equal(pattern.test(label), false);
+});

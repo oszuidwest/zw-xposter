@@ -11,6 +11,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -188,6 +189,61 @@ func (c *Client) Recent(ctx context.Context, lookback time.Duration) ([]Post, er
 		return nil, errors.New("poster returned an incomplete recent-post timeline")
 	}
 	return out.Posts, nil
+}
+
+// Delete removes the account's post at postURL. An error does not prove the
+// post still exists, so callers check Recent before trying again.
+func (c *Client) Delete(ctx context.Context, postURL string) error {
+	id, ok := StatusID(postURL)
+	if !ok {
+		return fmt.Errorf("delete post: %q is not an X post URL", postURL)
+	}
+	body, err := json.Marshal(map[string]string{"id": id})
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/delete", bytes.NewReader(body))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := c.http.Do(req)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = resp.Body.Close() }()
+
+	var out struct {
+		Deleted string `json:"deleted"`
+		Error   string `json:"error"`
+	}
+	if err := json.NewDecoder(io.LimitReader(resp.Body, maxResponseBytes)).Decode(&out); err != nil {
+		return fmt.Errorf("poster returned %s: %w", resp.Status, err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("poster returned %s: %s", resp.Status, out.Error)
+	}
+	if out.Deleted != id {
+		return fmt.Errorf("poster confirmed deleting %q instead of %q", out.Deleted, id)
+	}
+	return nil
+}
+
+// StatusID returns the numeric post ID of an X status URL.
+func StatusID(postURL string) (string, bool) {
+	u, err := url.Parse(postURL)
+	if err != nil {
+		return "", false
+	}
+	parts := strings.Split(strings.Trim(u.Path, "/"), "/")
+	if len(parts) < 2 || parts[len(parts)-2] != "status" {
+		return "", false
+	}
+	id := parts[len(parts)-1]
+	if id == "" || strings.Trim(id, "0123456789") != "" {
+		return "", false
+	}
+	return id, true
 }
 
 // Ready checks cached session health without browser work.

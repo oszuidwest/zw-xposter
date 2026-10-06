@@ -7,6 +7,7 @@ import {
   isFirstUserTweetsPage,
   isUserTimelineResponse,
   parseCreateTweetResponse,
+  parseDeleteTweetResponse,
   parseUserTweetsPayload,
   postErrorResponse,
 } from './timeline.mjs';
@@ -389,4 +390,14 @@ test('serializes post errors with click state, stage and caption outcome', async
   assert.deepEqual(postErrorResponse(before), await fixture('post-error-before-click.json'));
   assert.deepEqual(postErrorResponse(after), await fixture('post-error-after-click.json'));
   assert.deepEqual(postErrorResponse(video), await fixture('post-error-video-stage.json'));
+});
+
+test('accepts only an acknowledged DeleteTweet response', async () => {
+  parseDeleteTweetResponse(await fixture('delete-tweet.json'));
+  assert.throws(() => parseDeleteTweetResponse({ data: {} }), /X rejected the deletion: no confirmation in response/);
+  assert.throws(() => parseDeleteTweetResponse(undefined), /no confirmation in response/);
+  assert.throws(
+    () => parseDeleteTweetResponse({ data: { delete_tweet: { tweet_results: {} } }, errors: [{ message: 'Synthetic rejection' }] }),
+    /X rejected the deletion: Synthetic rejection/,
+  );
 });

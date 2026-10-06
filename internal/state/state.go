@@ -31,19 +31,34 @@ const (
 
 // Entry is the stored outcome for one feed item.
 type Entry struct {
-	Title             string    `json:"title"`
-	Link              string    `json:"link"`
-	Status            string    `json:"status"`
-	PostURL           string    `json:"post_url,omitempty"`
-	FoundOnX          bool      `json:"found_on_x,omitempty"` // found on X, possibly our own earlier attempt
-	Attempts          int       `json:"attempts,omitempty"`
-	LastError         string    `json:"last_error,omitempty"`
-	Format            string    `json:"format,omitempty"` // a Format constant; empty in legacy state
-	FallbackReason    string    `json:"fallback_reason,omitempty"`
-	PublishedAt       time.Time `json:"published_at,omitzero"`
-	NextAttemptAt     time.Time `json:"next_attempt_at,omitzero"`
-	ReplayRequestedAt time.Time `json:"replay_requested_at,omitzero"`
-	UpdatedAt         time.Time `json:"updated_at"`
+	Title          string `json:"title"`
+	Link           string `json:"link"`
+	Status         string `json:"status"`
+	PostURL        string `json:"post_url,omitempty"`
+	FoundOnX       bool   `json:"found_on_x,omitempty"` // found on X, possibly our own earlier attempt
+	Attempts       int    `json:"attempts,omitempty"`
+	LastError      string `json:"last_error,omitempty"`
+	Format         string `json:"format,omitempty"` // a Format constant; empty in legacy state
+	FallbackReason string `json:"fallback_reason,omitempty"`
+	// AwaitingVideo marks a post made while the feed listed no video; a later video replaces it.
+	AwaitingVideo     bool         `json:"awaiting_video,omitempty"`
+	Replaces          *Replacement `json:"replaces,omitempty"`
+	PublishedAt       time.Time    `json:"published_at,omitzero"`
+	NextAttemptAt     time.Time    `json:"next_attempt_at,omitzero"`
+	ReplayRequestedAt time.Time    `json:"replay_requested_at,omitzero"`
+	UpdatedAt         time.Time    `json:"updated_at"`
+}
+
+// Replacement is the earlier post that a video post replaces. It is deleted
+// once the video post is confirmed, or restored if the video cannot be posted.
+type Replacement struct {
+	PostURL        string    `json:"post_url"`
+	Format         string    `json:"format"`
+	FallbackReason string    `json:"fallback_reason,omitempty"`
+	FoundOnX       bool      `json:"found_on_x,omitempty"`
+	Attempts       int       `json:"attempts,omitempty"`
+	DeleteAttempts int       `json:"delete_attempts,omitempty"`
+	NextDeleteAt   time.Time `json:"next_delete_at,omitzero"`
 }
 
 // Store holds entries keyed by feed GUID; Save persists them as JSON.
@@ -76,6 +91,9 @@ func Load(path string) (*Store, error) {
 		}
 		if status := s.Items[guid].Status; !validStatus(status) {
 			return nil, fmt.Errorf("state entry %q has unknown status %q", guid, status)
+		}
+		if old := s.Items[guid].Replaces; old != nil && (old.PostURL == "" || !validFormat(old.Format)) {
+			return nil, fmt.Errorf("state entry %q has an invalid replaced post", guid)
 		}
 	}
 	return s, nil

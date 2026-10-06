@@ -6,6 +6,7 @@
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
 //   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
+//   POST /delete -> delete an own post by numeric ID; 200 only after X confirms
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -26,6 +27,7 @@ import {
   isFirstUserTweetsPage,
   isUserTimelineResponse,
   parseCreateTweetResponse,
+  parseDeleteTweetResponse,
   postErrorResponse,
 } from './timeline.mjs';
 
@@ -61,6 +63,7 @@ const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
+const DELETE_MENU = new RegExp(xUI.deleteMenuPattern, 'i');
 
 let context;
 let tab;
@@ -519,6 +522,60 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
   }
 }
 
+function isDeleteTweet(url) {
+  return new URL(url).pathname.endsWith('/DeleteTweet');
+}
+
+function deletedTweetID(request) {
+  try {
+    return request.postDataJSON()?.variables?.tweet_id;
+  } catch {
+    return undefined;
+  }
+}
+
+// Only own posts offer Delete, and the route guard blocks a DeleteTweet for any other ID.
+async function deletePost(id, signal) {
+  const throwIfGone = () => signal.throwIfAborted();
+  throwIfGone();
+  const page = await getTab();
+  const blocked = Promise.withResolvers();
+  blocked.promise.catch(() => {});
+  const guard = (route) => {
+    const target = deletedTweetID(route.request());
+    if (target === id) return route.fallback();
+    blocked.reject(new Error(`blocked a DeleteTweet request for ${target || 'an unknown post'} instead of ${id}`));
+    return route.abort();
+  };
+  await page.route(isDeleteTweet, guard);
+  try {
+    await ensureLoggedIn(page);
+    throwIfGone();
+    await page.goto(`https://x.com/${USERNAME}/status/${id}`, { waitUntil: 'domcontentloaded' });
+    // The timestamp link identifies the focal post among replies and quotes.
+    const post = page.locator('article').filter({ has: page.locator(`a[href$="/status/${id}"] time`) }).first();
+    await post.waitFor();
+    await pause(1500, 3500);
+    await humanClick(page, post.locator('[data-testid="caret"]'));
+    const item = page.getByRole('menuitem', { name: DELETE_MENU });
+    await item.waitFor({ timeout: 10_000 });
+    await pause(500, 1500);
+    await humanClick(page, item);
+    const confirm = page.locator('[data-testid="confirmationSheetConfirm"]');
+    await confirm.waitFor({ timeout: 10_000 });
+    await pause(700, 1800);
+    const response = page.waitForResponse((r) => isDeleteTweet(r.url()) && deletedTweetID(r.request()) === id, { timeout: 30_000, signal });
+    response.catch(() => {});
+    await humanClick(page, confirm, { throwIfCancelled: throwIfGone });
+    parseDeleteTweetResponse(await (await Promise.race([response, blocked.promise])).json());
+  } catch (err) {
+    err.message += ` (screenshot: ${await screenshot(page, 'delete')})`;
+    throw err;
+  } finally {
+    await page.unroute(isDeleteTweet, guard).catch(() => {});
+  }
+}
+
 async function recentPosts(hours) {
   const page = await getTab();
   await ensureLoggedIn(page);
@@ -568,14 +625,19 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function postAndSend(res, post, videoFile) {
-  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+// Abort browser work when the client disconnects or the budget is spent.
+function requestSignal(res, timeoutMs) {
   const controller = new AbortController();
   if (res.destroyed) controller.abort();
   else res.once('close', () => controller.abort());
+  return AbortSignal.any([controller.signal, AbortSignal.timeout(timeoutMs)]);
+}
+
+async function postAndSend(res, post, videoFile) {
+  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
   // Transcribe inside the queue so posts keep their request order.
   // The budget covers queueing, transcription, at most two uploads and confirmation.
-  const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS)]);
+  const signal = requestSignal(res, videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS);
   const result = await exclusive(() => createPost(post, signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
@@ -619,6 +681,15 @@ export const server = http.createServer(async (req, res) => {
         return send(res, 400, { error: 'image needs mime and data' });
       }
       return await postAndSend(res, payload);
+    }
+    if (req.method === 'POST' && url.pathname === '/delete') {
+      const { id } = await readJSON(req);
+      if (typeof id !== 'string' || !/^\d+$/.test(id)) return send(res, 400, { error: 'id must be a numeric post ID' });
+      log('deleting post', id);
+      const signal = requestSignal(res, POST_TIMEOUT_MS);
+      await exclusive(() => deletePost(id, signal));
+      log('deleted post', id);
+      return send(res, 200, { deleted: id });
     }
     if (req.method === 'POST' && url.pathname === '/post-video') {
       let text;

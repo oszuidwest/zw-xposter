@@ -214,6 +214,13 @@ export function parseCreateTweetResponse(body, username) {
   return { id, url: `https://x.com/${screenName(result) || username}/status/${id}` };
 }
 
+// Require X's acknowledgement; otherwise report its error message.
+export function parseDeleteTweetResponse(body) {
+  if (body?.errors?.length || !body?.data?.delete_tweet) {
+    throw new Error(`X rejected the deletion: ${errorMessages(body) || 'no confirmation in response'}`);
+  }
+}
+
 // Preserve the error and click state so the orchestrator can reconcile uncertain outcomes.
 export function postErrorResponse(error) {
   return {
