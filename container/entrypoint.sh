@@ -1,7 +1,7 @@
 #!/bin/bash
 set -euo pipefail
 
-# One-off maintenance commands do not start a browser or a polling loop.
+# One-off maintenance commands do not start the poster or a polling loop.
 if [[ ${1:-} != serve ]]; then
     exec "$@"
 fi
@@ -23,28 +23,11 @@ cleanup() {
 trap cleanup EXIT
 trap 'exit 0' TERM INT
 
-# Hold the profile lock for the entire container lifetime, including shutdown.
+# Hold the poster lock for the entire container lifetime, including shutdown.
 exec 9>"$DATA_DIR/poster.lock"
 if ! flock -n 9; then
-    echo 'another poster holds the profile lock' >&2
+    echo 'another poster holds the poster lock' >&2
     exit 1
-fi
-rm -f "$DATA_DIR/profile/SingletonLock"
-
-if [[ ${HEADLESS:-false} != true ]]; then
-    rm -f /tmp/.X99-lock /tmp/.X11-unix/X99
-    env -i "PATH=$PATH" Xvfb :99 -screen 0 "${SCREEN_SIZE:-1920x1080}x24" -nolisten tcp 9>&- &
-    pids+=("$!")
-    for ((attempt=0; attempt<50; attempt++)); do
-        if [[ -S /tmp/.X11-unix/X99 ]]; then break; fi
-        if ! kill -0 "${pids[0]}" 2>/dev/null; then break; fi
-        sleep 0.1
-    done
-    if [[ ! -S /tmp/.X11-unix/X99 ]]; then
-        echo 'Xvfb did not start' >&2
-        exit 1
-    fi
-    export DISPLAY=:99
 fi
 
 # Filter credentials by application; the shared UID still permits cross-process access.
@@ -56,11 +39,11 @@ fi
 pids+=("$!")
 (
     unset "${!X_@}" ELEVENLABS_API_KEY
-    # Allow slow Chromium starts 90s, matching the healthcheck start period.
-    # Browser requests then queue behind the initial session check.
-    attempt=0
+    # Bound startup by the healthcheck start period.
+    # Authenticated requests queue behind the initial session check.
+    deadline=$((SECONDS + 90))
     until (: <>/dev/tcp/127.0.0.1/8081) 2>/dev/null; do
-        if ((++attempt >= 900)); then
+        if ((SECONDS >= deadline)); then
             echo 'poster did not start' >&2
             exit 1
         fi

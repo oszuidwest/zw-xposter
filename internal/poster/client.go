@@ -1,4 +1,4 @@
-// Package poster talks to the Playwright poster service.
+// Package poster talks to the local X poster service.
 package poster
 
 import (
@@ -246,7 +246,7 @@ func StatusID(postURL string) (string, bool) {
 	return id, true
 }
 
-// Ready checks cached session health without browser work.
+// Ready checks cached session health without sending requests to X.
 // A non-200 response includes the cached state in the error.
 func (c *Client) Ready(ctx context.Context) error {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.baseURL+"/ready", http.NoBody)

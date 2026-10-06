@@ -7,11 +7,11 @@ root=$(cd "$(dirname "$0")/.." && pwd)
 cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
 trap 'cleanup' EXIT
 # Disposable state and fake credentials for the full serve command.
-offline=(--network none --shm-size=1g --tmpfs '/data:uid=1000,gid=1000,mode=0700'
+offline=(--network none --tmpfs '/data:uid=1000,gid=1000,mode=0700'
     -e X_USERNAME=offline-test -e X_AUTH_TOKEN=offline-test)
 serve_fresh='echo '\''{"items":{}}'\'' >/data/state.json && exec /app/entrypoint.sh serve "$@"'
 
-# Isolate startup ordering and timeouts from browser and session behavior.
+# Isolate startup ordering and timeouts from session behavior.
 docker run --rm --network none --user 0 \
     -v "$root/container/entrypoint.test.sh:/tmp/entrypoint.test.sh:ro" \
     "$image" bash /tmp/entrypoint.test.sh
@@ -36,15 +36,16 @@ start() {
 }
 
 # The smoke test is not part of the image, so it is mounted read-only.
-docker run --rm --network none --shm-size=1g \
+docker run --rm --network none \
     -v "$root/poster/container-smoke.mjs:/app/poster/container-smoke.mjs:ro" \
-    "$image" xvfb-run -a node container-smoke.mjs
+    "$image" node container-smoke.mjs
 
-# Exercise the HTTP-to-browser workflow against local, intercepted X responses.
-docker run --rm --network none --shm-size=1g \
-    -v "$root/poster/browser.integration.mjs:/app/poster/browser.integration.mjs:ro" \
+# Exercise the real HTTP server and transport against deterministic X responses.
+docker run --rm --network none \
+    -v "$root/poster/server.test.mjs:/app/poster/server.test.mjs:ro" \
+    -v "$root/poster/http-fixtures.mjs:/app/poster/http-fixtures.mjs:ro" \
     -v "$root/testdata/contract:/app/testdata/contract:ro" \
-    "$image" node --test browser.integration.mjs
+    "$image" node --test server.test.mjs
 
 # No automatic initialization or masking of CLI exit codes.
 if docker run --rm --network none "$image" /app/orchestrator; then
@@ -73,10 +74,10 @@ for (const statuses of [[200, 200], [200, 503], [503, 200]]) {
 for (const server of servers) server.close();
 JS
 
-for target in orchestrator node Xvfb stop; do
+for target in orchestrator node stop; do
     start
     if docker exec "$container" flock -n /data/poster.lock true; then
-        echo 'the profile lock was not held' >&2
+        echo 'the poster lock was not held' >&2
         exit 1
     fi
     if docker exec "$container" node /app/healthcheck.mjs; then
@@ -84,9 +85,9 @@ for target in orchestrator node Xvfb stop; do
         exit 1
     fi
 
-    # Verify user IDs and credential filtering without printing any environment,
-    # then kill the target process.
-    docker exec -i "$container" node --input-type=module - "$target" <<'JS'
+    # Finish assertions before fault injection: fast shutdown can kill docker exec
+    # itself with 137, which must not mask a failed assertion.
+    target_pid=$(docker exec -i "$container" node --input-type=module - "$target" <<'JS'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
 const target = process.argv[2];
@@ -95,8 +96,7 @@ for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
     let args;
     try { args = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf8').split('\0'); } catch { continue; }
     const role = args[0] === '/app/orchestrator' ? 'orchestrator'
-        : args[1] === '/app/poster/server.mjs' ? 'node'
-        : args[0] === 'Xvfb' ? 'Xvfb' : args[0]?.endsWith('/chrome') ? 'chromium' : null;
+        : args[1] === '/app/poster/server.mjs' ? 'node' : null;
     if (!role) continue;
     assert.match(fs.readFileSync(`/proc/${pid}/status`, 'utf8'), /Uid:\s+1000\s+1000/);
     const env = fs.readFileSync(`/proc/${pid}/environ`, 'utf8').split('\0');
@@ -104,11 +104,17 @@ for (const pid of fs.readdirSync('/proc').filter(name => /^\d+$/.test(name))) {
     assert.equal(env.some(value => value.startsWith('ELEVENLABS_API_KEY=')), role === 'node');
     pids[role] = Number(pid);
 }
-assert.deepEqual(Object.keys(pids).sort(), ['Xvfb', 'chromium', 'node', 'orchestrator']);
-if (target !== 'stop') process.kill(pids[target], 'SIGKILL');
+assert.deepEqual(Object.keys(pids).sort(), ['node', 'orchestrator']);
+if (target !== 'stop') console.log(pids[target]);
 JS
+    )
     if [[ $target == stop ]]; then
         docker stop --time 25 "$container" >/dev/null
+    else
+        injection_status=0
+        docker exec "$container" bash -c 'kill -KILL "$1"' _ "$target_pid" || injection_status=$?
+        # The container may exit before the kill helper is reaped.
+        if [[ $injection_status != 0 && $injection_status != 137 ]]; then exit "$injection_status"; fi
     fi
     code=$(timeout 24 docker wait "$container")
     if [[ $target == stop ]]; then [[ $code == 0 ]]; else [[ $code != 0 ]]; fi
@@ -116,7 +122,7 @@ JS
     cleanup
 done
 
-# One-shot mode must propagate the offline feed failure after browser startup.
+# One-shot mode must propagate the offline feed failure after poster startup.
 # Match the cause too: startup failures in entrypoint.sh also exit 1.
 status=0
 output=$(docker run --rm "${offline[@]}" -e DRY_RUN=true "$image" bash -c "$serve_fresh" _ -once 2>&1) || status=$?

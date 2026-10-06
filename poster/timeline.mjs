@@ -78,6 +78,7 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
   let oldestTopLevel = Infinity;
   let reachedEnd = false;
   let hasBottomCursor = false;
+  let bottomCursor;
   let hasTweetOrModuleEntry = false;
 
   for (const instruction of timelineInstructions(body)) {
@@ -103,6 +104,7 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
       const content = entry?.content;
       if (content?.entryType === 'TimelineTimelineCursor' && content.cursorType === 'Bottom') {
         hasBottomCursor = true;
+        bottomCursor = content.value;
         continue;
       }
 
@@ -127,7 +129,7 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
   }
   if (hasBottomCursor && !hasTweetOrModuleEntry) reachedEnd = true;
 
-  return { posts, oldestTopLevel, reachedEnd };
+  return { posts, oldestTopLevel, reachedEnd, bottomCursor };
 }
 
 // Both operation names serve the account's profile timeline.
@@ -204,9 +206,10 @@ export function createTimelineCollector({ ownId = '', username, cutoff }) {
 
 // Require a tweet ID; otherwise report X's rejection message.
 export function parseCreateTweetResponse(body, username) {
-  const result = body?.data?.create_tweet?.tweet_results?.result;
+  let result = body?.data?.create_tweet?.tweet_results?.result;
+  if (result?.__typename === 'TweetWithVisibilityResults') result = result.tweet;
   const id = result?.rest_id;
-  if (!id) {
+  if (!/^\d{1,25}$/.test(id) || body?.errors?.length) {
     const reason = errorMessages(body) || 'no tweet id in response';
     throw new Error(`X rejected the post: ${reason}`);
   }

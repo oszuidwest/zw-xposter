@@ -65,7 +65,7 @@ jobs:
           # Cached package-install layers would miss newly available security fixes.
           no-cache: true
 
-      - name: Check the browser and container lifecycle without network access
+      - name: Check the HTTP poster and container lifecycle without network access
         run: bash container/test.sh "$IMAGE_REF"
 
       - name: Generate security report
