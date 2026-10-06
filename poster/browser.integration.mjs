@@ -44,6 +44,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let failVideo;
   let uploadStatus;
   let failCaptions;
+  let failCaptionSelection;
+  let captionStatus;
+  let captionCategory;
   let failImage;
   let failRecovery;
   let loggedOut;
@@ -53,6 +56,13 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let uploads = 0;
   let captionsRequested;
   let captionsAccepted;
+  let captionSelected;
+  let selectionAllowed;
+  let holdCaptionSelection;
+  await context.exposeBinding('offlineCaptionSelected', () => {
+    captionSelected.resolve();
+    if (holdCaptionSelection) return selectionAllowed.promise;
+  });
   t.beforeEach(() => {
     failTranscription = false;
     rejectPost = false;
@@ -60,6 +70,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failVideo = false;
     uploadStatus = 200;
     failCaptions = false;
+    failCaptionSelection = false;
+    captionStatus = 201;
+    captionCategory = undefined;
     failImage = false;
     failRecovery = false;
     loggedOut = false;
@@ -68,6 +81,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     videoProcessing = Promise.withResolvers();
     captionsRequested = Promise.withResolvers();
     captionsAccepted = Promise.withResolvers();
+    captionSelected = Promise.withResolvers();
+    selectionAllowed = Promise.withResolvers();
+    holdCaptionSelection = false;
   });
   const published = [];
   const unexpected = [];
@@ -78,15 +94,29 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       unexpected.push(request.url());
       return route.abort();
     }
-    if (url.pathname === '/offline/captions') {
-      assert.equal(request.postData(), srt);
-      captionsRequested.resolve();
-      await captionsAccepted.promise;
-      return route.fulfill({ status: failCaptions ? 400 : 200, body: '' });
+    if (url.pathname === '/i/api/1.1/media/subtitles/create.json') {
+      return route.fulfill({ status: 200, body: '' });
     }
     if (url.pathname === '/i/media/upload.json') {
       if (uploadStatus !== 200) return route.fulfill({ status: uploadStatus, body: 'account restricted' });
       const command = url.searchParams.get('command');
+      if (url.searchParams.has('media_category')) {
+        captionCategory = url.searchParams.get('media_category');
+        return route.fulfill({ status: 202, contentType: 'application/json', body: JSON.stringify({ media_id_string: 'caption-123' }) });
+      }
+      if (url.searchParams.get('media_id') === 'caption-123') {
+        if (command === 'APPEND') {
+          assert.equal(request.postData(), srt);
+          captionsRequested.resolve();
+          await captionsAccepted.promise;
+          return route.fulfill({ status: 204 });
+        }
+        assert.equal(command, 'FINALIZE');
+        const rejected = failCaptions || captionCategory !== 'subtitles';
+        return route.fulfill({ status: rejected ? 400 : captionStatus, contentType: 'application/json', body: JSON.stringify(rejected
+          ? { error: 'media type unrecognized.' }
+          : { media_id_string: 'caption-123', subtitles: { subtitle_format: 'text/srt' } }) });
+      }
       if (command === 'INIT') uploads++;
       if (!command) return route.fulfill({ status: failImage ? 400 : 200, contentType: 'application/json', body: JSON.stringify({ media_id_string: 'image-123' }) });
       if (command === 'APPEND') {
@@ -134,6 +164,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
       if (loggedOut) body = body.replace('data-testid="SideNav_AccountSwitcher_Button"', 'data-testid="logged-out"');
+      if (failCaptionSelection) body = body.replace("document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
       return route.fulfill({ contentType: 'text/html', body });
     }
     unexpected.push(request.url());
@@ -186,6 +217,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   for (const video of [false, true]) await t.test(`cancelled ${video ? 'captions' : 'text'} never publishes`, async () => {
+    holdCaptionSelection = video;
     videoProcessing.resolve();
     const before = [...published];
     const controller = new AbortController();
@@ -193,10 +225,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       : post('Cancelled', controller.signal);
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
-    await (video ? captionsRequested.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
+    await (video ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
     controller.abort();
     await aborted;
     captionsAccepted.resolve();
+    selectionAllowed.resolve();
     // This request queues behind the abandoned post; completion proves cleanup ran.
     const recent = await fetch(`${base}/recent?hours=1`);
     assert.equal(recent.status, 200);
@@ -222,7 +255,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published, before, 'a preview and enabled button do not mean the video is ready');
     videoProcessing.resolve();
     await captionsRequested.promise;
-    assert.deepEqual(published, before, 'caption selection alone must not allow publication');
+    assert.deepEqual(published, before, 'the deferred caption upload must finish before publication');
     captionsAccepted.resolve();
     const result = await response;
     assert.equal(result.status, 200);
@@ -240,6 +273,49 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(result.captions, 'none');
     assert.match(result.fallbackReason, /HTTP 503/);
     assert.equal(published.length, before + 1);
+  });
+
+  await t.test('a deferred caption rejection preserves uncertainty and downgrades the next retry', async () => {
+    failCaptions = true;
+    videoProcessing.resolve();
+    captionsAccepted.resolve();
+    const before = [...published];
+    const response = await postVideo('Late caption failure', Buffer.from('synthetic MP4'));
+    const result = await response.json();
+    assert.equal(response.status, 500);
+    assert.equal(result.clicked, true);
+    assert.equal(result.stage, 'captions');
+    assert.equal(result.captions, 'none');
+    assert.match(result.error, /caption upload FINALIZE returned HTTP 400: media type unrecognized/);
+    assert.match(result.fallbackReason, /caption upload/);
+    assert.deepEqual(published, before, 'no automatic second publication request after a click');
+  });
+
+  await t.test('cancelling the deferred caption upload prevents CreateTweet', async () => {
+    videoProcessing.resolve();
+    const before = [...published];
+    const controller = new AbortController();
+    const response = postVideo('Cancelled upload', Buffer.from('synthetic MP4'), controller.signal);
+    const aborted = assert.rejects(response, { name: 'AbortError' });
+    await captionsRequested.promise;
+    controller.abort();
+    await aborted;
+    captionsAccepted.resolve();
+    assert.equal((await fetch(`${base}/recent?hours=1`)).status, 200);
+    assert.deepEqual(published, before);
+  });
+
+  await t.test('a deferred caption authorization failure preserves the caption format', async () => {
+    captionStatus = 403;
+    videoProcessing.resolve();
+    captionsAccepted.resolve();
+    const response = await postVideo('Restricted captions', Buffer.from('synthetic MP4'));
+    const result = await response.json();
+    assert.equal(response.status, 500);
+    assert.equal(result.clicked, true);
+    assert.equal(result.stage, 'session');
+    assert.equal(result.captions, 'attached');
+    assert.equal(result.fallbackReason, undefined);
   });
 
   await t.test('failed encoding reports video stage', async () => {
@@ -266,7 +342,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   await t.test('caption attachment failure recovers once and reuploads without another transcript', async () => {
-    failCaptions = true;
+    failCaptionSelection = true;
     videoProcessing.resolve();
     captionsAccepted.resolve();
     const before = transcriptions;
