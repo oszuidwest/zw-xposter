@@ -189,11 +189,13 @@ export function waitForPostResponse(page, { signal, timeoutMs = 60_000 } = {}) {
     const processingFailed = body?.processing_info?.state === 'failed';
     const failure = body?.errors?.length ? body.errors : body?.error || (processingFailed && body.processing_info.error);
     if (response.ok() && !failure && !processingFailed) return false;
-    // Unknown API errors and account restrictions must not discard subtitles.
+    // Temporary service failures, unknown API errors and account restrictions
+    // do not establish invalid captions and must not discard subtitles.
+    const serviceFailure = response.status() === 429 || response.status() >= 500;
     let stage = 'service';
     if ([401, 403].includes(response.status())) {
       stage = 'session';
-    } else if ((captionUpload || subtitleAssociation) && !publicationStarted && !body?.errors?.length) {
+    } else if (!serviceFailure && (captionUpload || subtitleAssociation) && !publicationStarted && !body?.errors?.length) {
       stage = 'captions';
     }
     let operation = `${captionUpload ? 'caption' : 'media'} upload${command ? ` ${command}` : ''}`;

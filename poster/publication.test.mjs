@@ -117,6 +117,25 @@ test('account restrictions and ambiguous API errors never downgrade captions', a
   });
 });
 
+test('rate limits and server failures never downgrade captions', async (t) => {
+  for (const status of [429, 500, 502, 503]) {
+    for (const operation of ['INIT', 'FINALIZE', 'association']) await t.test(`${operation} HTTP ${status}`, async (t) => {
+      const f = fixture(t);
+      const options = { status, body: 'temporary service failure' };
+      if (operation === 'association') {
+        await f.respond(f.request('https://x.com/i/api/1.1/media/subtitles/create.json'), options);
+      } else if (operation === 'INIT') {
+        await f.upload({ command: 'INIT', media_category: 'subtitles' }, options);
+      } else {
+        await f.init();
+        await f.upload({ command: 'FINALIZE', media_id: 'captions-1' }, options);
+      }
+      await assert.rejects(f.result, { stage: 'service' });
+      f.cleaned();
+    });
+  }
+});
+
 test('unrelated media and metadata errors do not discard captions', async (t) => {
   for (const path of ['/i/media/upload.json?command=FINALIZE&media_id=other', '/i/api/1.1/media/metadata/create.json']) await t.test(path, async (t) => {
     const f = fixture(t);
@@ -150,7 +169,7 @@ test('non-JSON HTTP errors retain status and bounded details', async (t) => {
   const f = fixture(t);
   await f.init();
   await f.upload({ command: 'FINALIZE', media_id: 'captions-1' }, { status: 502, body: 'upstream unavailable '.repeat(1000) });
-  await assert.rejects(f.result, (error) => error.stage === 'captions' && /HTTP 502: upstream unavailable/.test(error.message) && error.message.length < 1100);
+  await assert.rejects(f.result, (error) => error.stage === 'service' && /HTTP 502: upstream unavailable/.test(error.message) && error.message.length < 1100);
   f.cleaned();
 });
 

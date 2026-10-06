@@ -305,17 +305,19 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published, before);
   });
 
-  await t.test('a deferred caption authorization failure preserves the caption format', async () => {
-    captionStatus = 403;
+  for (const status of [403, 429, 500, 502, 503]) await t.test(`a deferred caption HTTP ${status} preserves the caption format`, async () => {
+    captionStatus = status;
     videoProcessing.resolve();
     captionsAccepted.resolve();
-    const response = await postVideo('Restricted captions', Buffer.from('synthetic MP4'));
+    const before = [...published];
+    const response = await postVideo('Unavailable captions', Buffer.from('synthetic MP4'));
     const result = await response.json();
     assert.equal(response.status, 500);
     assert.equal(result.clicked, true);
-    assert.equal(result.stage, 'session');
+    assert.equal(result.stage, status === 403 ? 'session' : 'service');
     assert.equal(result.captions, 'attached');
     assert.equal(result.fallbackReason, undefined);
+    assert.deepEqual(published, before, 'no immediate publication retry after a click');
   });
 
   await t.test('failed encoding reports video stage', async () => {
