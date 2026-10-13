@@ -358,9 +358,30 @@ func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 	return nil
 }
 
+// alertVideoAdded asks for a manual decision once the feed adds a video to an
+// article this service posted without one.
+func (a *app) alertVideoAdded(item *feed.Item, now time.Time) error {
+	entry := a.store.Items[item.GUID]
+	if entry.Status != state.StatusPosted || !entry.AwaitingVideo || item.VideoURL == "" || a.expired(&entry, now) {
+		return nil
+	}
+	slog.Warn("video added after posting; the post is unchanged", "title", entry.Title, "post", entry.PostURL, "video", item.VideoURL)
+	entry.AwaitingVideo = false
+	if err := a.record(item.GUID, &entry); err != nil {
+		return err
+	}
+	a.alerts.Notify(notify.Event{
+		Key:     "workflow:video-added:" + item.GUID,
+		Summary: "Video added after posting",
+		Details: fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s\nPost: %s\nVideo: %s",
+			item.GUID, entry.Title, entry.Link, entry.PostURL, item.VideoURL),
+	})
+	return nil
+}
+
 func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollState) error {
 	if a.store.Done(item.GUID) {
-		return nil
+		return a.alertVideoAdded(item, workflow.now)
 	}
 	entry := a.store.Items[item.GUID]
 	// The feed is authoritative for listed items' metadata, including replays.
@@ -581,6 +602,7 @@ func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.En
 		if item.VideoURL != "" {
 			entry.Format = state.FormatVideoCaptions
 		}
+		entry.AwaitingVideo = item.VideoURL == ""
 	}
 	for {
 		if err := ctx.Err(); err != nil {

@@ -136,6 +136,41 @@ func TestPollVideoTakesPriority(t *testing.T) {
 	}
 }
 
+// Only a post made while the feed listed no video is flagged, and only once.
+func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
+	for _, tt := range []struct {
+		name                string
+		video               bool
+		initial             state.Entry
+		published           time.Time
+		wantBefore, wantEnd bool
+	}{
+		{name: "posted without video", wantBefore: true},
+		{name: "posted with video", video: true},
+		{name: "legacy entry", initial: state.Entry{Status: state.StatusPosted, PostURL: "https://x.invalid/status/legacy"}},
+		{name: "expired", initial: state.Entry{Status: state.StatusPosted, AwaitingVideo: true},
+			published: testNow.Add(-25 * time.Hour), wantBefore: true, wantEnd: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{video: tt.video, initial: tt.initial, published: tt.published, content: fallbackContent})
+			testutil.NoError(t, fixture.app.store.Save())
+			before := fixture.poll()
+			testutil.Equal(t, before.Status, state.StatusPosted)
+			testutil.Equal(t, before.AwaitingVideo, tt.wantBefore)
+			posts := fixture.postCalls.Load()
+
+			fixture.items[0].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
+			for range 2 {
+				entry := fixture.poll()
+				testutil.Equal(t, entry.AwaitingVideo, tt.wantEnd)
+				testutil.Equal(t, entry.PostURL, before.PostURL)
+			}
+			testutil.Equal(t, fixture.postCalls.Load(), posts)
+			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].AwaitingVideo, tt.wantEnd)
+		})
+	}
+}
+
 func TestPollRecoversPersistedPosting(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusPosting, Attempts: 1}})
 	testutil.NoError(t, fixture.app.store.Save())
