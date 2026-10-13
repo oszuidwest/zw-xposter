@@ -39,12 +39,12 @@ const (
 	retryInitial     = 2 * time.Minute
 	retryMaximum     = 30 * time.Minute
 	uncertainMinimum = 5 * time.Minute
-	// recentMargin is the X history checked beyond MAX_AGE.
+	// Check this much X history beyond MAX_AGE.
 	recentMargin          = 24 * time.Hour
 	alertCheckInterval    = time.Minute
 	operationalTimeout    = 10 * time.Second
 	serverShutdownTimeout = 5 * time.Second
-	// statusAddr is fixed because container/healthcheck.mjs expects it.
+	// Must match container/healthcheck.mjs.
 	statusAddr = "127.0.0.1:8080"
 
 	posterNotReadyKey = "poster:not-ready"
@@ -381,7 +381,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 
 	if !workflow.recentLoaded {
-		// A complete timeline check is required to rule out duplicates.
+		// Only a complete timeline can rule out duplicates.
 		recent, err := a.poster.Recent(ctx, workflow.lookback)
 		if err != nil {
 			return fmt.Errorf("check X for existing posts: %w", err)
@@ -461,8 +461,8 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	return a.record(guid, entry)
 }
 
-// publish posts the item and records the outcome in entry. Poster failures
-// become workflow state; cancellation and state-save failures stop the poll.
+// publish records post failures, including in-flight cancellation, as workflow state.
+// Preparation and state-save errors stop the poll.
 func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) (string, error) {
 	log := slog.With("title", item.Title, "link", item.Link)
 	text := postText(item)
@@ -484,7 +484,7 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 			return "", err
 		}
 		if a.cfg.DryRun {
-			// The API key is deliberately only passed to the poster process.
+			// Caption checks need the API key held only by the poster.
 			log.Info("dry run: predicted post; captions, upload and browser outcome unverified", "text", text, "format", entry.Format, "fallback_reason", entry.FallbackReason)
 			closeVideo()
 			entry.Status = state.StatusPosted // in-memory preview only

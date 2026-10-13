@@ -16,8 +16,7 @@ import (
 // maxVideoSize also bounds the streamed body in poster/media.mjs.
 const maxVideoSize = 512 << 20
 
-// ErrUnsupportedVideo marks a video that no retry can post: not a readable MP4,
-// over the size limit, or outside X's duration limits.
+// ErrUnsupportedVideo marks invalid MP4 data or size/duration outside supported limits.
 var ErrUnsupportedVideo = errors.New("unsupported video")
 
 // Video holds a downloaded MP4 on disk, ready to stream to the poster.
@@ -30,8 +29,7 @@ func (v *Video) Close() error {
 	return errors.Join(v.File.Close(), os.Remove(v.Name()))
 }
 
-// FetchVideo downloads a bounded MP4 through the same URL and redirect policy as images.
-// Videos that X cannot accept return an error wrapping ErrUnsupportedVideo.
+// FetchVideo downloads and validates an MP4 using the content client's URL restrictions.
 func FetchVideo(ctx context.Context, client *http.Client, videoURL string) (*Video, error) {
 	return fetchVideo(ctx, client, videoURL, maxVideoSize)
 }

@@ -1,5 +1,4 @@
 ---
-# Requires .hadolint.yaml at the repo root.
 name: Docker Quality
 
 on:
@@ -25,7 +24,6 @@ jobs:
       - name: Checkout Repository
         uses: actions/checkout@v7
 
-      # Ignore rules live in .hadolint.yaml - do not duplicate here.
       - name: Hadolint
         uses: hadolint/hadolint-action@v3.5.0
         with:

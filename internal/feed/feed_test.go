@@ -40,6 +40,9 @@ func TestFetch(t *testing.T) {
 			want: []string{"https://example.nl/?p=2: Newest ‘article’"},
 		},
 		{name: "oversized body", body: strings.Repeat("x", maxBodySize+1), wantErr: "fetch feed: response exceeds"},
+		{name: "HTML error page", body: `<html><body>Temporarily unavailable</body></html>`, wantErr: "parse feed:"},
+		{name: "missing channel", body: `<rss version="2.0"></rss>`, wantErr: "feed has no channel"},
+		{name: "empty channel", body: `<rss version="2.0"><channel></channel></rss>`},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			server := testutil.Server(t, func(w http.ResponseWriter, _ *http.Request) {

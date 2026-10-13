@@ -37,7 +37,7 @@ type Service struct {
 	reminder   time.Duration
 	recipients []string
 	mailer     mailer
-	lastSent   map[string]time.Time // last enqueue time per active condition, not delivery time
+	lastQueued map[string]time.Time
 	jobs       chan message
 	closed     bool
 	work       sync.WaitGroup
@@ -56,7 +56,7 @@ func newService(m mailer, recipients []string, reminder time.Duration) *Service 
 		reminder:   reminder,
 		recipients: slices.Clone(recipients),
 		mailer:     m,
-		lastSent:   make(map[string]time.Time),
+		lastQueued: make(map[string]time.Time),
 		jobs:       make(chan message, 128),
 	}
 	service.work.Go(service.deliver)
@@ -77,14 +77,14 @@ func (s *Service) Alert(event Event) {
 	defer s.mu.Unlock()
 	now := time.Now()
 	kind := "ALERT"
-	if lastSent, active := s.lastSent[event.Key]; active {
-		if now.Sub(lastSent) < s.reminder {
+	if lastQueued, active := s.lastQueued[event.Key]; active {
+		if now.Sub(lastQueued) < s.reminder {
 			return
 		}
 		kind = "REMINDER"
 	}
 	if s.enqueueLocked(formatMessage(kind, event, now)) {
-		s.lastSent[event.Key] = now
+		s.lastQueued[event.Key] = now
 	}
 }
 
@@ -105,8 +105,8 @@ func (s *Service) Resolve(event Event) {
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if _, active := s.lastSent[event.Key]; active && s.enqueueLocked(formatMessage("RECOVERED", event, time.Now())) {
-		delete(s.lastSent, event.Key)
+	if _, active := s.lastQueued[event.Key]; active && s.enqueueLocked(formatMessage("RECOVERED", event, time.Now())) {
+		delete(s.lastQueued, event.Key)
 	}
 }
 

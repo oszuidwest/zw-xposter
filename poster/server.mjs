@@ -34,9 +34,9 @@ const DATA_DIR = process.env.DATA_DIR || '/data';
 const USERNAME = process.env.X_USERNAME;
 const PASSWORD = process.env.X_PASSWORD;
 const AUTH_TOKEN = process.env.X_AUTH_TOKEN || '';
-// Answer for X's "unusual login activity" check (email address or phone number).
+// X's login challenge accepts an email address or phone number.
 const VERIFICATION = process.env.X_VERIFICATION || '';
-// Default to headed Chromium on the container's virtual display.
+// Headed Chromium uses the container's virtual display.
 const HEADLESS = process.env.HEADLESS === 'true';
 const LANGUAGES = (process.env.BROWSER_LANGUAGES || 'nl-NL,nl,en-US,en').split(',');
 const [WINDOW_WIDTH, WINDOW_HEIGHT] = (process.env.WINDOW_SIZE || '1440x960').split('x').map(Number);
@@ -156,8 +156,7 @@ async function screenshot(page, name) {
 // Retain each page's last click target for the next mouse path.
 const mouse = new WeakMap();
 
-// Click a random interior point after a curved mouse move.
-// Check cancellation before mouse-down and mouse-up; onPress marks the final release attempt.
+// onPress marks the release attempt that can publish, even if confirmation fails.
 async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress = () => {} } = {}) {
   await locator.scrollIntoViewIfNeeded();
   const box = await locator.boundingBox();
@@ -441,7 +440,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
 
       const button = dialog.locator('[data-testid="tweetButton"]');
       await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-      // Let the composer settle before clicking or capturing a dry run.
+      // Allow delayed overlays and attachment changes to appear before the final checks.
       await pause(1500, 4000);
       await acknowledgeNotice(page);
       throwIfGone();
@@ -504,7 +503,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     }
     if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
     if (clicked) err.message += ' (after clicking post; it may be on X)';
-    // Leave no half-written composer behind for the next post.
     try {
       await resetComposer();
     } catch (recovery) {
@@ -545,7 +543,6 @@ async function recentPosts(hours) {
     await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
     await page.locator('article').first().waitFor();
     await pause(1500, 3000);
-    // Bound scrolling; reject the request if the window remains incomplete.
     for (let i = 0; i < 8; i++) {
       await Promise.all(pending);
       if (timeline.complete() || timeline.failed()) break;

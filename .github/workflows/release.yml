@@ -86,7 +86,7 @@ jobs:
     permissions:
       contents: write
     steps:
-      # Keeps a release created by hand, with its notes, when one already exists.
+      # Preserve manually written release notes.
       - name: Create GitHub release
         env:
           GH_TOKEN: ${{ github.token }}
