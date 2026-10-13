@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.27.1-alpine3.24 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS go-build
 WORKDIR /src
 COPY go.mod ./
 COPY cmd/orchestrator/ ./cmd/orchestrator/
@@ -36,12 +36,13 @@ ARG BUILD_TIME=unknown
 ARG DEBIAN_FRONTEND=noninteractive
 # Use Playwright's dependency list for this Ubuntu version without copying npm
 # or the build image into the runtime. Keep the desktop fonts and Mesa renderer.
+# The base image ships Pebble outside dpkg; it is unused and lags Go security fixes.
 RUN --mount=type=bind,from=poster-build,source=/build/node_modules,target=/build/node_modules \
     apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 tini util-linux tzdata xvfb \
         fonts-dejavu-core fonts-ubuntu fonts-croscore libgl1-mesa-dri libegl1 libgl1 && \
     node /build/node_modules/playwright-core/cli.js install-deps chromium && \
-    rm -rf /var/lib/apt/lists/* && \
+    rm -rf /var/lib/apt/lists/* /usr/bin/pebble && \
     install -d -o 1000 -g 1000 -m 0700 /data && \
     install -d -m 1777 /tmp/.X11-unix
 

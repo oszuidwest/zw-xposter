@@ -1,6 +1,6 @@
 module github.com/oszuidwest/zw-xposter
 
-go 1.27.1
+go 1.27.2
 
 // npm packages under node_modules may contain Go sources.
 ignore ./poster/node_modules
