@@ -4,6 +4,7 @@ package feed
 import (
 	"context"
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"log/slog"
 	"mime"
@@ -27,19 +28,22 @@ type Item struct {
 }
 
 type rss struct {
-	Items []struct {
-		GUID       string `xml:"guid"`
-		Title      string `xml:"title"`
-		Link       string `xml:"link"`
-		PubDate    string `xml:"pubDate"`
-		Enclosures []struct {
-			URL  string `xml:"url,attr"`
-			Type string `xml:"type,attr"`
-		} `xml:"enclosure"`
-	} `xml:"channel>item"`
+	XMLName xml.Name `xml:"rss"`
+	Channel *struct {
+		Items []struct {
+			GUID       string `xml:"guid"`
+			Title      string `xml:"title"`
+			Link       string `xml:"link"`
+			PubDate    string `xml:"pubDate"`
+			Enclosures []struct {
+				URL  string `xml:"url,attr"`
+				Type string `xml:"type,attr"`
+			} `xml:"enclosure"`
+		} `xml:"item"`
+	} `xml:"channel"`
 }
 
-// Fetch returns items oldest first, logging and skipping invalid publication dates.
+// Fetch requires an RSS channel and returns items oldest first, skipping invalid dates.
 func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error) {
 	body, _, err := safehttp.Get(ctx, client, url, maxBodySize)
 	if err != nil {
@@ -50,9 +54,12 @@ func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error)
 	if err := xml.Unmarshal(body, &doc); err != nil {
 		return nil, fmt.Errorf("parse feed: %w", err)
 	}
+	if doc.Channel == nil {
+		return nil, errors.New("feed has no channel")
+	}
 
-	items := make([]Item, 0, len(doc.Items))
-	for _, raw := range doc.Items {
+	items := make([]Item, 0, len(doc.Channel.Items))
+	for _, raw := range doc.Channel.Items {
 		published, err := time.Parse(time.RFC1123Z, strings.TrimSpace(raw.PubDate))
 		if err != nil {
 			slog.Warn("skipping feed item with invalid pubDate", "guid", strings.TrimSpace(raw.GUID), "pub_date", raw.PubDate, "error", err)
@@ -81,7 +88,6 @@ func Fetch(ctx context.Context, client *http.Client, url string) ([]Item, error)
 		items = append(items, item)
 	}
 
-	// Post in publication order; WordPress lists newest first.
 	slices.SortStableFunc(items, func(a, b Item) int { return a.Published.Compare(b.Published) })
 	return items, nil
 }

@@ -34,9 +34,9 @@ COPY --from=poster-build /usr/local/bin/node /usr/local/bin/node
 # The release timestamp invalidates package-update layers on each release build.
 ARG BUILD_TIME=unknown
 ARG DEBIAN_FRONTEND=noninteractive
-# Use Playwright's dependency list for this Ubuntu version without copying npm
-# or the build image into the runtime. Keep the desktop fonts and Mesa renderer.
-# The base image ships Pebble outside dpkg; it is unused and lags Go security fixes.
+# Install Playwright's OS dependencies without retaining npm.
+# Keep desktop fonts and Mesa for headed Chromium.
+# Remove Ubuntu's unmanaged Pebble binary to avoid its bundled Go vulnerabilities.
 RUN --mount=type=bind,from=poster-build,source=/build/node_modules,target=/build/node_modules \
     apt-get update && apt-get upgrade -y && \
     apt-get install -y --no-install-recommends ca-certificates libatomic1 libstdc++6 tini util-linux tzdata xvfb \

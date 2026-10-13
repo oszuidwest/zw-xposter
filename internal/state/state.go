@@ -53,11 +53,12 @@ type Store struct {
 	Items  map[string]Entry `json:"items"`
 }
 
-// Load reads the store from path. A missing file yields an empty store.
+// Load rejects invalid state; a missing file yields an empty store.
 func Load(path string) (*Store, error) {
-	s := &Store{path: path, Items: map[string]Entry{}}
+	s := &Store{path: path}
 	data, err := os.ReadFile(path) //nolint:gosec // The state path is operator-configured, not user input.
 	if errors.Is(err, os.ErrNotExist) {
+		s.Items = map[string]Entry{}
 		return s, nil
 	}
 	if err != nil {
@@ -67,7 +68,7 @@ func Load(path string) (*Store, error) {
 		return nil, fmt.Errorf("parse %s: %w", path, err)
 	}
 	if s.Items == nil {
-		s.Items = map[string]Entry{}
+		return nil, fmt.Errorf("state file %q has no items object", path)
 	}
 	s.exists = true
 	for guid := range s.Items {

@@ -96,6 +96,44 @@ func TestLoadRejectsUnknownStatus(t *testing.T) {
 	}
 }
 
+func TestLoadRequiresItemsObject(t *testing.T) {
+	t.Parallel()
+	for _, tt := range []struct {
+		name, body string
+	}{
+		{name: "null", body: `null`},
+		{name: "missing items", body: `{}`},
+		{name: "null items", body: `{"items":null}`},
+		{name: "array items", body: `{"items":[]}`},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			path := filepath.Join(t.TempDir(), "state.json")
+			testutil.NoError(t, os.WriteFile(path, []byte(tt.body), 0o600))
+			store, err := Load(path)
+			if err == nil || store != nil {
+				t.Fatalf("Load() = %#v, %v; want invalid state error", store, err)
+			}
+		})
+	}
+}
+
+func TestLoadEmptyStore(t *testing.T) {
+	t.Parallel()
+	path := filepath.Join(t.TempDir(), "state.json")
+	store, err := Load(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, store.Exists(), false)
+	if store.Items == nil {
+		t.Fatal("missing state must initialize a writable items map")
+	}
+	testutil.NoError(t, store.Save())
+	store, err = Load(path)
+	testutil.NoError(t, err)
+	testutil.Equal(t, store.Exists(), true)
+	testutil.Equal(t, len(store.Items), 0)
+}
+
 func TestDone(t *testing.T) {
 	tests := []struct {
 		name   string
