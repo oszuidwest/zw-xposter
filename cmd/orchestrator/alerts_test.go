@@ -17,6 +17,31 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
 
+func graphMailHandler(t *testing.T, receive func(subject, body string)) http.HandlerFunc {
+	t.Helper()
+	return func(w http.ResponseWriter, r *http.Request) {
+		switch r.Host {
+		case "login.microsoftonline.com":
+			_, _ = io.WriteString(w, `{"access_token":"offline-token","expires_in":3600}`)
+		case "graph.microsoft.com":
+			var mail struct {
+				Message struct {
+					Subject string
+					Body    struct{ Content string }
+				}
+			}
+			if err := json.NewDecoder(r.Body).Decode(&mail); err != nil {
+				t.Error(err)
+			}
+			receive(mail.Message.Subject, mail.Message.Body.Content)
+			w.WriteHeader(http.StatusAccepted)
+		default:
+			t.Errorf("unexpected outbound request to %s%s", r.Host, r.URL)
+			w.WriteHeader(http.StatusInternalServerError)
+		}
+	}
+}
+
 func TestOperationalAlertsFollowFailureAndRecovery(t *testing.T) {
 	// Replace HTTP only; keep real alert delivery. The global override forbids t.Parallel.
 	original := http.DefaultTransport
@@ -24,31 +49,17 @@ func TestOperationalAlertsFollowFailureAndRecovery(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		ready := false
 		subjects := []string{}
+		graph := graphMailHandler(t, func(subject, _ string) { subjects = append(subjects, subject) })
 		// In-memory HTTP keeps all requests inside the synctest bubble.
 		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			switch r.Host {
-			case "poster.invalid":
+			if r.Host == "poster.invalid" {
 				testutil.Equal(t, r.URL.Path, "/ready")
 				if !ready {
 					w.WriteHeader(http.StatusServiceUnavailable)
 				}
-			case "login.microsoftonline.com":
-				_, _ = io.WriteString(w, `{"access_token":"offline-token","expires_in":3600}`)
-			case "graph.microsoft.com":
-				var mail struct {
-					Message struct {
-						Subject string `json:"subject"`
-					} `json:"message"`
-				}
-				if err := json.NewDecoder(r.Body).Decode(&mail); err != nil {
-					t.Error(err)
-				}
-				subjects = append(subjects, mail.Message.Subject)
-				w.WriteHeader(http.StatusAccepted)
-			default:
-				t.Errorf("unexpected outbound request to %s%s", r.Host, r.URL)
-				w.WriteHeader(http.StatusInternalServerError)
+				return
 			}
+			graph(w, r)
 		}))
 		http.DefaultTransport = server.Client().Transport
 		cfg := &config.Config{
