@@ -40,7 +40,7 @@ type Entry struct {
 	LastError         string    `json:"last_error,omitempty"`
 	Format            string    `json:"format,omitempty"` // a Format constant; empty in legacy state
 	FallbackReason    string    `json:"fallback_reason,omitempty"`
-	AwaitingVideo     bool      `json:"awaiting_video,omitempty"` // posted while the feed listed no video
+	AwaitingVideo     bool      `json:"awaiting_video,omitempty"` // media chosen while the feed listed no video
 	PublishedAt       time.Time `json:"published_at,omitzero"`
 	NextAttemptAt     time.Time `json:"next_attempt_at,omitzero"`
 	ReplayRequestedAt time.Time `json:"replay_requested_at,omitzero"`

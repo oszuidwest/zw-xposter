@@ -22,7 +22,7 @@ Videos require MP4 RSS enclosures (up to 512 MiB, 0.5 seconds–20 minutes). Add
 
 Publication tries **video with Dutch captions → video without captions → article image (`og:image`) → text with article link**. Only the feed's selected video enclosure is used. Media failures, including temporary download/upload failures and unsupported or empty videos, immediately advance the chain: timely publication takes priority over richer media. A successful fallback is final.
 
-If the feed adds a video to an article that was posted while it listed none, the post stays unchanged and a one-time alert names the post and the video, so someone can decide by hand. This applies within MAX_AGE, not to video fallbacks or entries saved before this check existed.
+If the feed adds a video to an article that was posted without one, the post stays unchanged and a one-time alert names the post and the video, so someone can decide by hand. This applies within MAX_AGE, not to video fallbacks or entries saved before this check existed.
 
 `ELEVENLABS_API_KEY` is optional. With a key that has **Speech to Text** permission, videos are sent to ElevenLabs for Dutch subtitles (paid usage). Without a key, videos publish without captions. Transcription errors, empty/invalid captions and caption attachment failures also permit uncaptioned video. Caption attachment recovery uses one clean composer and at most one video re-upload, without repeating transcription. Queueing, transcription, recovery and browser work share a 24-minute budget after at most five minutes receiving the video, within the client's 30-minute request. Later image/text requests have separate five-minute client budgets.
 

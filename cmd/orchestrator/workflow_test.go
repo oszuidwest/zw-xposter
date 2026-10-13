@@ -110,6 +110,7 @@ func TestPollVideoTakesPriority(t *testing.T) {
 			testutil.NoError(t, err)
 			testutil.Equal(t, len(remaining), 0)
 			testutil.Equal(t, entry.Status, tt.wantStatus)
+			testutil.Equal(t, entry.AwaitingVideo, false) // includes fallbacks to image
 			fixture.assertCalls(1, tt.wantPosts)
 			wantContent := 1
 			if tt.download != nil {
@@ -157,7 +158,7 @@ func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
 			before := fixture.poll()
 			testutil.Equal(t, before.Status, state.StatusPosted)
 			testutil.Equal(t, before.AwaitingVideo, tt.wantBefore)
-			posts := fixture.postCalls.Load()
+			recent, posts := fixture.recentCalls.Load(), fixture.postCalls.Load()
 
 			fixture.items[0].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
 			for range 2 {
@@ -165,10 +166,36 @@ func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
 				testutil.Equal(t, entry.AwaitingVideo, tt.wantEnd)
 				testutil.Equal(t, entry.PostURL, before.PostURL)
 			}
-			testutil.Equal(t, fixture.postCalls.Load(), posts)
+			fixture.assertCalls(recent, posts)
 			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].AwaitingVideo, tt.wantEnd)
 		})
 	}
+}
+
+// The alert needs no X check, so a failing check cannot delay it.
+func TestPollAlertsAddedVideoBeforeCheckingX(t *testing.T) {
+	posted := feed.Item{GUID: "guid-2", Title: "Posted article", Link: "/posted", Published: testNow.Add(-time.Hour)}
+	fixture := newPollTest(t, &pollTestOptions{
+		// The pending primary item precedes the posted one in the feed.
+		extra: []feed.Item{posted},
+		recent: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		},
+	})
+	fixture.items[1].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
+	fixture.app.store.SetAt(posted.GUID, &state.Entry{
+		Title:         posted.Title,
+		Link:          fixture.items[1].Link,
+		Status:        state.StatusPosted,
+		PostURL:       "https://x.invalid/status/2",
+		AwaitingVideo: true,
+		PublishedAt:   posted.Published,
+	}, testNow.Add(-time.Minute))
+	testutil.NoError(t, fixture.app.store.Save())
+
+	testutil.ErrorContains(t, fixture.app.poll(t.Context()), "check X for existing posts")
+	fixture.assertCalls(1, 0)
+	testutil.Equal(t, reloadPollState(t, fixture).Items[posted.GUID].AwaitingVideo, false)
 }
 
 func TestPollRecoversPersistedPosting(t *testing.T) {
