@@ -291,8 +291,7 @@ func (a *app) replay(ctx context.Context, guid string) error {
 	return nil
 }
 
-// recoverPosting marks unfinished attempts uncertain for reconciliation against X.
-// Check each poll: crashes and failed outcome saves can leave posting entries.
+// recoverPosting marks attempts left unfinished by crashes or failed saves as uncertain.
 func (a *app) recoverPosting() bool {
 	changed := false
 	now := a.now()
@@ -338,9 +337,7 @@ func (a *app) poll(ctx context.Context) error {
 	return nil
 }
 
-// expireUnlisted closes expired retries and uncertain outcomes outside the feed.
-// Never post from state alone: missing articles may have been withdrawn.
-// Without a publication date, only a replay within MAX_AGE keeps an entry pending.
+// expireUnlisted expires pending entries outside the feed; withdrawn articles must not post.
 func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 	listed := make(map[string]bool, len(items))
 	for _, item := range items {
@@ -361,8 +358,7 @@ func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 	return nil
 }
 
-// alertAddedVideos asks for a manual decision once the feed adds a video to an
-// article this service posted without one.
+// alertAddedVideos flags new videos once, leaving published posts unchanged.
 func (a *app) alertAddedVideos(items []feed.Item, now time.Time) error {
 	for _, item := range items {
 		entry := a.store.Items[item.GUID]
@@ -442,8 +438,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	return nil
 }
 
-// recentLookback covers MAX_AGE plus a margin and any checkable pending replay.
-// Never truncate: the poster must reject an unsupported window, not check too little.
+// recentLookback includes pending replays; truncating it could miss duplicates.
 func (a *app) recentLookback(items []feed.Item, now time.Time) time.Duration {
 	lookback := a.cfg.MaxAge + recentMargin
 	for _, item := range items {
@@ -705,7 +700,6 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 	}, true
 }
 
-// articleDetails identifies an article in alert emails.
 func articleDetails(guid string, entry *state.Entry) string {
 	return fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s", guid, entry.Title, entry.Link)
 }

@@ -51,6 +51,5 @@ jobs:
       - name: Set up Docker Compose
         uses: docker/setup-compose-action@v2
 
-      # compose.yml only passes variables through, so nothing needs a .env.
       - name: Docker Compose Validation
         run: docker compose config --quiet

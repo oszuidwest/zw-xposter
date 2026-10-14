@@ -21,7 +21,6 @@ import (
 // MAX_RECENT_HOURS in poster/server.mjs.
 const MaxLookbackHours = 336
 
-// MaxLookback is MaxLookbackHours as a duration.
 const MaxLookback = MaxLookbackHours * time.Hour
 
 // LookbackHours rounds d up to the whole hours /recent accepts.
@@ -77,7 +76,6 @@ type PostError struct {
 	Stage   string
 }
 
-// Error preserves the poster's message for operational logs.
 func (e *PostError) Error() string {
 	return fmt.Sprintf("poster returned %s: %s", e.Status, e.Message)
 }

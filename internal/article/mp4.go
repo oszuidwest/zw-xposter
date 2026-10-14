@@ -8,7 +8,6 @@ import (
 	"time"
 )
 
-// X's duration limits for a post video on an account without Premium.
 // maxVideoDuration also bounds caption timings in poster/subtitles.mjs.
 const (
 	minVideoDuration = 500 * time.Millisecond
@@ -49,6 +48,9 @@ func mp4Duration(r io.ReadSeeker) (time.Duration, error) {
 	}
 	if n < need {
 		return 0, fmt.Errorf("%w: mvhd box is truncated", ErrUnsupportedVideo)
+	}
+	if mvhd[0] > 1 {
+		return 0, fmt.Errorf("%w: mvhd version %d", ErrUnsupportedVideo, mvhd[0])
 	}
 	var timescale uint32
 	var units uint64

@@ -35,7 +35,7 @@ type Entry struct {
 	Link              string    `json:"link"`
 	Status            string    `json:"status"`
 	PostURL           string    `json:"post_url,omitempty"`
-	FoundOnX          bool      `json:"found_on_x,omitempty"` // found on X, possibly our own earlier attempt
+	FoundOnX          bool      `json:"found_on_x,omitempty"` // includes our own earlier attempts
 	Attempts          int       `json:"attempts,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`
 	Format            string    `json:"format,omitempty"` // a Format constant; empty in legacy state
@@ -47,7 +47,7 @@ type Entry struct {
 	UpdatedAt         time.Time `json:"updated_at"`
 }
 
-// Store holds entries keyed by feed GUID; Save persists them as JSON.
+// Store holds entries keyed by feed GUID.
 type Store struct {
 	path   string
 	exists bool

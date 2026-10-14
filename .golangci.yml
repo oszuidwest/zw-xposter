@@ -3,12 +3,10 @@ version: "2"
 
 linters:
   enable:
-    # Doc/Comment
     - godot
     - godoclint
     - dupword
     - misspell
-    # Code quality
     - gocritic
     - gocyclo
     - errorlint

@@ -30,9 +30,9 @@ type pollTestOptions struct {
 	now       func() time.Time
 	published time.Time
 	initial   state.Entry
-	// extra are additional feed items; their Link is a path on the test server.
+	// Links are paths on the test server.
 	extra []feed.Item
-	// video gives the article a featured video at /video.mp4 on the content server.
+	// Adds a /video.mp4 enclosure.
 	video   bool
 	recent  func(http.ResponseWriter, *http.Request, feed.Item)
 	post    func(http.ResponseWriter, *http.Request, feed.Item)
@@ -422,7 +422,6 @@ func TestPollExpiredTransitions(t *testing.T) {
 	}
 }
 
-// addUnlisted stores an article outside the feed and returns its stored value.
 func addUnlisted(fixture *pollTest, entry *state.Entry, updatedAt time.Time) state.Entry {
 	const guid = "guid-unlisted"
 	entry.Title = "Unlisted " + guid

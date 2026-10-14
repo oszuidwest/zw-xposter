@@ -300,6 +300,14 @@ test('recognizes only a UserTweets request without a cursor as the first page', 
   assert.equal(isFirstUserTweetsPage('https://api.x.invalid/UserTweets'), false);
 });
 
+test('malformed variable shapes cannot establish the first timeline page', () => {
+  for (const variables of [null, [], [{}], true, 20, '']) {
+    const url = new URL('https://x.com/i/api/graphql/abc/UserTweets');
+    url.searchParams.set('variables', JSON.stringify(variables));
+    assert.equal(isFirstUserTweetsPage(url.href), false);
+  }
+});
+
 test('recognizes both operation names for the own profile timeline', () => {
   assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweets?variables=%7B%7D'), true);
   assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserOriginalsTimeline?variables=%7B%7D'), true);

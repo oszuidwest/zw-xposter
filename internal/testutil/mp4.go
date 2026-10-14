@@ -25,7 +25,6 @@ func MVHD(timescale, units uint32) []byte {
 func MP4(duration time.Duration) []byte {
 	return slices.Concat(
 		Box("ftyp", []byte("isom\x00\x00\x02\x00isom")),
-		// The timescale counts milliseconds.
 		Box("moov", MVHD(1000, uint32(duration.Milliseconds()))), //nolint:gosec // Test durations fit in 49 days of milliseconds.
 		Box("mdat", []byte("synthetic frames")),
 	)

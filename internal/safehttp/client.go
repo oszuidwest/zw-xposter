@@ -59,7 +59,7 @@ func New(feedURL string, additionalHosts []string) (*http.Client, error) {
 	}, nil
 }
 
-// allowlistTransport enforces the URL restrictions on every redirect hop too.
+// allowlistTransport checks every request, including redirects.
 type allowlistTransport struct {
 	base    http.RoundTripper
 	allowed map[string]struct{}
@@ -70,6 +70,12 @@ func (t *allowlistTransport) RoundTrip(req *http.Request) (*http.Response, error
 		return nil, err
 	}
 	return t.base.RoundTrip(req)
+}
+
+func (t *allowlistTransport) CloseIdleConnections() {
+	if transport, ok := t.base.(interface{ CloseIdleConnections() }); ok {
+		transport.CloseIdleConnections()
+	}
 }
 
 func validateURL(target *url.URL, allowed map[string]struct{}) error {
@@ -106,9 +112,8 @@ func normalizeHost(host string) string {
 // NAT64 is also excluded: a translator could reach a restricted IPv4 address.
 var globalUnicastIPv6 = netip.MustParsePrefix("2000::/3")
 
-// specialPurpose blocks IANA special-purpose ranges the broader checks allow.
-// Whole ranges are denied, including public exceptions in 192.0.0.0/24 and 2001::/23;
-// content fetching needs none of those destinations.
+// Deny special-purpose ranges, including their public exceptions;
+// content fetching needs none of them.
 var specialPurpose = []netip.Prefix{
 	netip.MustParsePrefix("0.0.0.0/8"),       // "this network"
 	netip.MustParsePrefix("100.64.0.0/10"),   // shared address space (CGNAT)

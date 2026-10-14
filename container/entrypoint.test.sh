@@ -2,6 +2,8 @@
 # Disposable containers only: overwrites the applications with startup probes.
 set -euo pipefail
 export HEADLESS=true
+DATA_DIR=$(mktemp -d)
+export DATA_DIR
 mkdir -p /tmp/bin
 export PATH="/tmp/bin:$PATH"
 
@@ -23,11 +25,14 @@ chmod +x /tmp/bin/node /app/orchestrator
 run() {
     local expected=$1 status=0
     shift
-    # Fresh state isolates profile locks inherited by the shutdown watchdog's sleep.
-    DATA_DIR=$(mktemp -d) timeout 120 /app/entrypoint.sh "$@" >/tmp/startup.log 2>&1 || status=$?
+    timeout 120 /app/entrypoint.sh "$@" >/tmp/startup.log 2>&1 || status=$?
     if [[ $status != "$expected" ]]; then
         cat /tmp/startup.log
         echo "expected exit $expected, got $status" >&2
+        exit 1
+    fi
+    if ! flock -n "$DATA_DIR/poster.lock" true; then
+        echo 'profile lock remained held after shutdown' >&2
         exit 1
     fi
 }

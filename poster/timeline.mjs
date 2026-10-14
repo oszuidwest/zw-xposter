@@ -70,9 +70,8 @@ function parseTweet(result, ownId, username) {
   };
 }
 
-// parseUserTweetsPayload reads entries in response order. Pinned entries and
-// conversation modules are searchable; quoted and retweeted tweets are not.
-// Only top-level entries can prove the cutoff.
+// Search pinned posts and conversation modules, but skip quotes and retweets.
+// Only unpinned top-level posts can prove the cutoff.
 export function parseUserTweetsPayload(body, { ownId = '', username }) {
   const posts = [];
   let oldestTopLevel = Infinity;
@@ -86,7 +85,6 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
       continue;
     }
     if (instruction.type === 'TimelinePinEntry') {
-      // Pinned posts do not establish how far back the timeline was read.
       const post = parseTweet(tweetResult(instruction.entry?.content?.itemContent), ownId, username);
       if (post) posts.push(post);
       continue;
@@ -141,7 +139,6 @@ export function isUserTimelineResponse(responseURL) {
   }
 }
 
-// Parsed variables without a cursor identify the first profile-timeline page.
 export function isFirstUserTweetsPage(responseURL) {
   try {
     const raw = new URL(responseURL).searchParams.get('variables');
@@ -149,6 +146,7 @@ export function isFirstUserTweetsPage(responseURL) {
     const variables = JSON.parse(raw);
     return variables !== null
       && typeof variables === 'object'
+      && !Array.isArray(variables)
       && !Object.hasOwn(variables, 'cursor');
   } catch {
     return false;
@@ -202,7 +200,6 @@ export function createTimelineCollector({ ownId = '', username, cutoff }) {
   };
 }
 
-// Require a tweet ID; otherwise report X's rejection message.
 export function parseCreateTweetResponse(body, username) {
   const result = body?.data?.create_tweet?.tweet_results?.result;
   const id = result?.rest_id;

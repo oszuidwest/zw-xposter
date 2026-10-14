@@ -32,6 +32,8 @@ func TestMP4Duration(t *testing.T) {
 	ftyp := testutil.Box("ftyp", []byte("isom"))
 	mdat := testutil.Box("mdat", []byte("frames"))
 	moov := func(mvhd []byte) []byte { return testutil.Box("moov", mvhd) }
+	unknownVersion := testutil.MVHD(1000, 1000)
+	unknownVersion[8] = 2
 	for _, tt := range []struct {
 		name        string
 		file        []byte
@@ -52,6 +54,7 @@ func TestMP4Duration(t *testing.T) {
 		{name: "no moov", file: slices.Concat(ftyp, mdat), unsupported: true},
 		{name: "no mvhd", file: slices.Concat(ftyp, testutil.Box("moov", testutil.Box("trak"))), unsupported: true},
 		{name: "zero timescale", file: moov(testutil.MVHD(0, 1000)), unsupported: true},
+		{name: "unknown mvhd version", file: moov(unknownVersion), unsupported: true},
 		{name: "empty mvhd at the end of the file", file: moov(testutil.Box("mvhd")), unsupported: true},
 		{name: "truncated mvhd", file: moov(testutil.Box("mvhd", make([]byte, 19))), unsupported: true},
 		{name: "truncated version 1 mvhd", file: moov(testutil.Box("mvhd", append([]byte{1}, make([]byte, 30)...))), unsupported: true},

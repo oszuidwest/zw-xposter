@@ -13,7 +13,7 @@ cleanup() {
     if ((${#pids[@]})); then
         kill -TERM "${pids[@]}" 2>/dev/null || true
         # Bound shutdown even when one child stops responding.
-        (trap - TERM INT; sleep 20; kill -KILL "${pids[@]}" 2>/dev/null || true) &
+        (trap - TERM INT; sleep 20; kill -KILL "${pids[@]}" 2>/dev/null || true) 9>&- &
         local watchdog=$!
         wait "${pids[@]}" 2>/dev/null || true
         kill "$watchdog" 2>/dev/null || true
@@ -48,7 +48,6 @@ if [[ ${HEADLESS:-false} != true ]]; then
 fi
 
 # Filter credentials by application; the shared UID still permits cross-process access.
-# Prefix filtering also covers future settings.
 (
     unset "${!GRAPH_@}" ALERT_RECIPIENTS HEARTBEAT_URL
     exec node /app/poster/server.mjs
@@ -56,8 +55,7 @@ fi
 pids+=("$!")
 (
     unset "${!X_@}" ELEVENLABS_API_KEY
-    # Allow slow Chromium starts 90s, matching the healthcheck start period.
-    # Browser requests then queue behind the initial session check.
+    # Match the 90s healthcheck grace period; requests then queue behind session setup.
     attempt=0
     until (: <>/dev/tcp/127.0.0.1/8081) 2>/dev/null; do
         if ((++attempt >= 900)); then

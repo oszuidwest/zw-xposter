@@ -21,7 +21,7 @@ const maxImageSize = 5 << 20
 type Image struct {
 	Name string `json:"name"`
 	MIME string `json:"mime"`
-	Data []byte `json:"data"` // encoding/json writes []byte as base64.
+	Data []byte `json:"data"`
 }
 
 var ogImage = regexp.MustCompile(`(?is)<meta\s+[^>]*(?:property|name)=["']og:image["'][^>]*>`)

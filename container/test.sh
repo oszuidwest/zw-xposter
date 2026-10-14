@@ -6,7 +6,6 @@ container="xposter-test-$$-$RANDOM"
 root=$(cd "$(dirname "$0")/.." && pwd)
 cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
 trap 'cleanup' EXIT
-# Disposable state and fake credentials for the full serve command.
 offline=(--network none --shm-size=1g --tmpfs '/data:uid=1000,gid=1000,mode=0700'
     -e X_USERNAME=offline-test -e X_AUTH_TOKEN=offline-test)
 serve_fresh='echo '\''{"items":{}}'\'' >/data/state.json && exec /app/entrypoint.sh serve "$@"'
@@ -35,7 +34,6 @@ start() {
     exit 1
 }
 
-# The smoke test is not part of the image, so it is mounted read-only.
 docker run --rm --network none --shm-size=1g \
     -v "$root/poster/container-smoke.mjs:/app/poster/container-smoke.mjs:ro" \
     "$image" xvfb-run -a node container-smoke.mjs
@@ -84,8 +82,7 @@ for target in orchestrator node Xvfb stop; do
         exit 1
     fi
 
-    # Verify user IDs and credential filtering without printing any environment,
-    # then kill the target process.
+    # Check credentials without printing the environment.
     docker exec -i "$container" node --input-type=module - "$target" <<'JS'
 import assert from 'node:assert/strict';
 import fs from 'node:fs';

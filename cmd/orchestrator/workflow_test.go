@@ -140,7 +140,6 @@ func TestPollVideoTakesPriority(t *testing.T) {
 	}
 }
 
-// Only a post made while the feed listed no video is flagged, and only once.
 func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
 	for _, tt := range []struct {
 		name                string
@@ -200,7 +199,6 @@ func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
 	}
 }
 
-// The alert needs no X check, so a failing check cannot delay it.
 func TestPollAlertsAddedVideoBeforeCheckingX(t *testing.T) {
 	posted := feed.Item{GUID: "guid-2", Title: "Posted article", Link: "/posted", Published: testNow.Add(-time.Hour)}
 	fixture := newPollTest(t, &pollTestOptions{

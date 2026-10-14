@@ -10,7 +10,7 @@ import (
 
 // acquireInstanceLock keeps one process responsible for a shared state file.
 func acquireInstanceLock(path string) (*os.File, error) {
-	// The lock is taken first, so it also creates the directory for a new STATE_FILE.
+	// Locking precedes state initialization, so its directory may not exist yet.
 	if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
 		return nil, fmt.Errorf("create orchestrator lock directory: %w", err)
 	}

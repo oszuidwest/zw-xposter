@@ -33,6 +33,34 @@ func TestClientBlocksRestrictedDestinationBeforeConnecting(t *testing.T) {
 	}
 }
 
+func TestClientClosesIdleConnections(t *testing.T) {
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("X-Remote-Addr", r.RemoteAddr)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	client := server.Client()
+	target, err := url.Parse(server.URL)
+	testutil.NoError(t, err)
+	client.Transport = &allowlistTransport{
+		base:    client.Transport,
+		allowed: map[string]struct{}{target.Hostname(): {}},
+	}
+	defer client.CloseIdleConnections()
+	remoteAddress := func() string {
+		resp, err := client.Get(server.URL)
+		testutil.NoError(t, err)
+		testutil.NoError(t, resp.Body.Close())
+		return resp.Header.Get("X-Remote-Addr")
+	}
+	first := remoteAddress()
+	testutil.Equal(t, remoteAddress(), first)
+	client.CloseIdleConnections()
+	if remoteAddress() == first {
+		t.Fatal("request reused a connection after CloseIdleConnections")
+	}
+}
+
 func TestValidateURL(t *testing.T) {
 	allowed := map[string]struct{}{
 		"www.zuidwestupdate.nl":   {},

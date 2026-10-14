@@ -4,7 +4,6 @@ name: Docker Security
 "on":
   push:
     branches: [main]
-    # Documentation never reaches the image.
     paths-ignore: &docs
       - '**.md'
       - 'LICENSE'
