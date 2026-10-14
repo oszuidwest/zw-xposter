@@ -24,7 +24,8 @@ const (
 	graphMaxRetryWait = 30 * time.Second
 )
 
-// Service.deliver owns graphClient; concurrent calls would race on its token cache.
+// graphClient sends plain-text mail with OAuth2 client credentials.
+// Service.deliver owns it; concurrent calls would race on the token cache.
 type graphClient struct {
 	clientID     string
 	clientSecret string
@@ -37,7 +38,7 @@ type graphClient struct {
 	tokenExpiry time.Time
 }
 
-// Authentication waits until the first send.
+// newGraphClient configures Graph delivery; authentication waits until the first send.
 func newGraphClient(cfg *config.GraphConfig) *graphClient {
 	return &graphClient{
 		clientID:     cfg.ClientID,

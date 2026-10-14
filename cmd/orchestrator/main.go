@@ -338,6 +338,7 @@ func (a *app) poll(ctx context.Context) error {
 }
 
 // expireUnlisted expires pending entries outside the feed; withdrawn articles must not post.
+// Without a publication date, only a replay within MAX_AGE keeps an entry pending.
 func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 	listed := make(map[string]bool, len(items))
 	for _, item := range items {

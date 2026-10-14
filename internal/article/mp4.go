@@ -8,6 +8,7 @@ import (
 	"time"
 )
 
+// X's duration limits for a post video on an account without Premium.
 // maxVideoDuration also bounds caption timings in poster/subtitles.mjs.
 const (
 	minVideoDuration = 500 * time.Millisecond
