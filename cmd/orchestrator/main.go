@@ -322,8 +322,11 @@ func (a *app) poll(ctx context.Context) error {
 	}
 
 	now := a.now()
-	// Expire unlisted items before a duplicate-check failure can block them.
+	// Expire unlisted items and report added videos before a duplicate-check failure can block them.
 	if err := a.expireUnlisted(items, now); err != nil {
+		return err
+	}
+	if err := a.alertAddedVideos(items, now); err != nil {
 		return err
 	}
 	workflow := &pollState{now: now, lookback: a.recentLookback(items, now)}
@@ -354,6 +357,28 @@ func (a *app) expireUnlisted(items []feed.Item, now time.Time) error {
 		if err := a.recordExpired(guid, &entry); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+// alertAddedVideos asks for a manual decision once the feed adds a video to an
+// article this service posted without one.
+func (a *app) alertAddedVideos(items []feed.Item, now time.Time) error {
+	for _, item := range items {
+		entry := a.store.Items[item.GUID]
+		if entry.Status != state.StatusPosted || !entry.AwaitingVideo || item.VideoURL == "" || a.expired(&entry, now) {
+			continue
+		}
+		slog.Warn("video added after posting; the post is unchanged", "title", entry.Title, "post", entry.PostURL, "video", item.VideoURL)
+		entry.AwaitingVideo = false
+		if err := a.record(item.GUID, &entry); err != nil {
+			return err
+		}
+		a.alerts.Notify(notify.Event{
+			Key:     "workflow:video-added:" + item.GUID,
+			Summary: "Video added after posting",
+			Details: articleDetails(item.GUID, &entry) + "\nPost: " + entry.PostURL + "\nVideo: " + item.VideoURL,
+		})
 	}
 	return nil
 }
@@ -581,6 +606,7 @@ func (a *app) prepareMedia(ctx context.Context, item *feed.Item, entry *state.En
 		if item.VideoURL != "" {
 			entry.Format = state.FormatVideoCaptions
 		}
+		entry.AwaitingVideo = item.VideoURL == ""
 	}
 	for {
 		if err := ctx.Err(); err != nil {
@@ -668,7 +694,7 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 	default:
 		return notify.Event{}, false
 	}
-	details := fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s", guid, entry.Title, entry.Link)
+	details := articleDetails(guid, entry)
 	if entry.LastError != "" {
 		details += "\nError: " + entry.LastError
 	}
@@ -677,6 +703,11 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 		Summary: summary,
 		Details: details,
 	}, true
+}
+
+// articleDetails identifies an article in alert emails.
+func articleDetails(guid string, entry *state.Entry) string {
+	return fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s", guid, entry.Title, entry.Link)
 }
 
 func (a *app) monitorOperationalAlerts(ctx context.Context) {

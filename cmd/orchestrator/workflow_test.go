@@ -7,13 +7,16 @@ import (
 	"html"
 	"io"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/oszuidwest/zw-xposter/internal/config"
 	"github.com/oszuidwest/zw-xposter/internal/feed"
+	"github.com/oszuidwest/zw-xposter/internal/notify"
 	"github.com/oszuidwest/zw-xposter/internal/state"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
@@ -110,6 +113,7 @@ func TestPollVideoTakesPriority(t *testing.T) {
 			testutil.NoError(t, err)
 			testutil.Equal(t, len(remaining), 0)
 			testutil.Equal(t, entry.Status, tt.wantStatus)
+			testutil.Equal(t, entry.AwaitingVideo, false) // includes fallbacks to image
 			fixture.assertCalls(1, tt.wantPosts)
 			wantContent := 1
 			if tt.download != nil {
@@ -134,6 +138,92 @@ func TestPollVideoTakesPriority(t *testing.T) {
 			}
 		})
 	}
+}
+
+// Only a post made while the feed listed no video is flagged, and only once.
+func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
+	for _, tt := range []struct {
+		name                string
+		video               bool
+		initial             state.Entry
+		published           time.Time
+		wantBefore, wantEnd bool
+		wantAlerts          int
+	}{
+		{name: "posted without video", wantBefore: true, wantAlerts: 1},
+		{name: "posted with video", video: true},
+		{name: "legacy entry", initial: state.Entry{Status: state.StatusPosted, PostURL: "https://x.invalid/status/legacy"}},
+		{name: "expired", initial: state.Entry{Status: state.StatusPosted, AwaitingVideo: true},
+			published: testNow.Add(-25 * time.Hour), wantBefore: true, wantEnd: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{video: tt.video, initial: tt.initial, published: tt.published, content: fallbackContent})
+			testutil.NoError(t, fixture.app.store.Save())
+			before := fixture.poll()
+			testutil.Equal(t, before.Status, state.StatusPosted)
+			testutil.Equal(t, before.AwaitingVideo, tt.wantBefore)
+			recent, posts := fixture.recentCalls.Load(), fixture.postCalls.Load()
+
+			fixture.items[0].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
+			// Replace HTTP only; the global override forbids t.Parallel.
+			original := http.DefaultTransport
+			t.Cleanup(func() { http.DefaultTransport = original })
+			var alerts int
+			server := httptest.NewTestServer(t, graphMailHandler(t, func(subject, body string) {
+				alerts++
+				testutil.Equal(t, subject, "[ALERT] Video added after posting - ZuidWest X Poster")
+				for _, detail := range []string{
+					"Condition: workflow:video-added:" + fixture.item.GUID,
+					"Title: " + fixture.item.Title, "Link: " + fixture.item.Link,
+					"Post: " + before.PostURL, "Video: " + fixture.items[0].VideoURL,
+				} {
+					if !strings.Contains(body, detail) {
+						t.Errorf("alert body %q does not contain %q", body, detail)
+					}
+				}
+			}))
+			http.DefaultTransport = server.Client().Transport
+			cfg := config.GraphConfig{TenantID: "offline", ClientID: "offline", ClientSecret: "offline",
+				FromAddress: "sender@example.invalid", Recipients: []string{"ops@example.invalid"}}
+			for range 2 {
+				fixture.app.alerts = notify.New(&cfg, 24*time.Hour)
+				t.Cleanup(fixture.app.alerts.Close)
+				entry := fixture.poll()
+				fixture.app.alerts.Close() // Drain delivery before checking this poll's mail.
+				testutil.Equal(t, entry.AwaitingVideo, tt.wantEnd)
+				testutil.Equal(t, entry.PostURL, before.PostURL)
+				testutil.Equal(t, alerts, tt.wantAlerts)
+			}
+			fixture.assertCalls(recent, posts)
+			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].AwaitingVideo, tt.wantEnd)
+		})
+	}
+}
+
+// The alert needs no X check, so a failing check cannot delay it.
+func TestPollAlertsAddedVideoBeforeCheckingX(t *testing.T) {
+	posted := feed.Item{GUID: "guid-2", Title: "Posted article", Link: "/posted", Published: testNow.Add(-time.Hour)}
+	fixture := newPollTest(t, &pollTestOptions{
+		// The pending primary item precedes the posted one in the feed.
+		extra: []feed.Item{posted},
+		recent: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+			http.Error(w, "unavailable", http.StatusServiceUnavailable)
+		},
+	})
+	fixture.items[1].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
+	fixture.app.store.SetAt(posted.GUID, &state.Entry{
+		Title:         posted.Title,
+		Link:          fixture.items[1].Link,
+		Status:        state.StatusPosted,
+		PostURL:       "https://x.invalid/status/2",
+		AwaitingVideo: true,
+		PublishedAt:   posted.Published,
+	}, testNow.Add(-time.Minute))
+	testutil.NoError(t, fixture.app.store.Save())
+
+	testutil.ErrorContains(t, fixture.app.poll(t.Context()), "check X for existing posts")
+	fixture.assertCalls(1, 0)
+	testutil.Equal(t, reloadPollState(t, fixture).Items[posted.GUID].AwaitingVideo, false)
 }
 
 func TestPollRecoversPersistedPosting(t *testing.T) {
