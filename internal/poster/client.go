@@ -96,6 +96,26 @@ func (c *Client) Post(ctx context.Context, text string, img *article.Image) (str
 	return result.URL, err
 }
 
+type replyRequest struct {
+	Text      string `json:"text"`
+	InReplyTo string `json:"inReplyTo"`
+}
+
+// Reply publishes text as a reply to the account's own post at inReplyTo and returns the reply URL.
+func (c *Client) Reply(ctx context.Context, inReplyTo, text string) (string, error) {
+	body, err := json.Marshal(replyRequest{Text: text, InReplyTo: inReplyTo})
+	if err != nil {
+		return "", err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/reply", bytes.NewReader(body))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	result, err := c.sendPost(req, c.http)
+	return result.URL, err
+}
+
 // PostVideo streams an MP4 instead of buffering a base64 copy in JSON.
 // With a *PostError, Result still reports any caption downgrade.
 func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, captions bool) (Result, error) {
@@ -151,11 +171,13 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error
 }
 
 // Post is a published post on the account.
+// ReplyTo is the parent's URL for replies to the account's own posts; replies to others are omitted.
 type Post struct {
-	ID   string   `json:"id"`
-	URL  string   `json:"url"`
-	Text string   `json:"text"`
-	URLs []string `json:"urls"`
+	ID      string   `json:"id"`
+	URL     string   `json:"url"`
+	Text    string   `json:"text"`
+	URLs    []string `json:"urls"`
+	ReplyTo string   `json:"replyTo,omitempty"`
 }
 
 // Recent returns own posts from lookback rounded up to whole hours, newest first.

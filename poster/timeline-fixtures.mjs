@@ -42,8 +42,8 @@ export function pinnedPage(isRecent = false) {
   return timeline({ type: 'TimelinePinEntry', entry: entry(pinned) }, entries(entry(ordinary)));
 }
 
-export function modulePage() {
-  const posts = [tweet('900000000000000701'), tweet('900000000000000702', old)];
+export function modulePage(allOld = false) {
+  const posts = [tweet('900000000000000701', allOld ? old : recent), tweet('900000000000000702', old)];
   return timeline(entries({ content: {
     entryType: 'TimelineTimelineModule',
     items: posts.map((post) => ({ item: { itemContent: entry(post).content.itemContent } })),
@@ -65,6 +65,28 @@ export function notePage() {
     entity_set: { urls: [{ expanded_url: 'https://example.invalid/articles/long' }] },
   } } };
   return timeline(entries(entry(post)));
+}
+
+// A headline post with its link reply, then an older reply to another account.
+export function replyPage() {
+  const main = tweet('900000000000000901');
+  const reply = tweet('900000000000000902', recent, ['https://example.invalid/articles/reply']);
+  Object.assign(reply.legacy, {
+    in_reply_to_status_id_str: '900000000000000901',
+    in_reply_to_user_id_str: account.ownId,
+    in_reply_to_screen_name: account.username,
+  });
+  const other = tweet('900000000000000903', old, ['https://example.invalid/articles/elsewhere']);
+  Object.assign(other.legacy, {
+    in_reply_to_status_id_str: '900000000000000001',
+    in_reply_to_user_id_str: '100000000000000002',
+    in_reply_to_screen_name: 'other_account',
+  });
+  const thread = (...items) => ({ content: {
+    entryType: 'TimelineTimelineModule',
+    items: items.map((post) => ({ item: { itemContent: entry(post).content.itemContent } })),
+  } });
+  return timeline(entries(thread(main, reply), thread(other)));
 }
 
 // An older entry must not hide unreadable own posts; foreign posts and tombstones may be skipped.

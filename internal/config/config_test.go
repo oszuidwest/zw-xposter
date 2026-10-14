@@ -1,6 +1,7 @@
 package config
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -96,6 +97,38 @@ func TestLoadRejectsInvalidDurations(t *testing.T) {
 			}
 			_, err := Load()
 			testutil.ErrorContains(t, err, tt.wantErr)
+		})
+	}
+}
+
+func TestLoadLinkInReply(t *testing.T) {
+	tests := []struct {
+		name      string
+		enabled   string
+		text      string
+		wantOn    bool
+		wantText  string
+		wantError string
+	}{
+		{name: "defaults", wantOn: true, wantText: DefaultReplyText},
+		{name: "disabled", enabled: "false", wantText: DefaultReplyText},
+		{name: "custom text is trimmed", text: "  Lees meer 👇 ", wantOn: true, wantText: "Lees meer 👇"},
+		{name: "blank text uses the default", text: " ", wantOn: true, wantText: DefaultReplyText},
+		{name: "invalid switch", enabled: "sometimes", wantError: "LINK_IN_REPLY"},
+		{name: "text too long", text: strings.Repeat("é", 201), wantError: "REPLY_TEXT must be at most 200 characters"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("LINK_IN_REPLY", tt.enabled)
+			t.Setenv("REPLY_TEXT", tt.text)
+			cfg, err := Load()
+			if tt.wantError != "" {
+				testutil.ErrorContains(t, err, tt.wantError)
+				return
+			}
+			testutil.NoError(t, err)
+			testutil.Equal(t, cfg.LinkInReply, tt.wantOn)
+			testutil.Equal(t, cfg.ReplyText, tt.wantText)
 		})
 	}
 }

@@ -36,6 +36,7 @@ type pollTestOptions struct {
 	video   bool
 	recent  func(http.ResponseWriter, *http.Request, feed.Item)
 	post    func(http.ResponseWriter, *http.Request, feed.Item)
+	reply   func(http.ResponseWriter, *http.Request, feed.Item)
 	content http.HandlerFunc
 }
 
@@ -47,6 +48,7 @@ type pollTest struct {
 	recentCalls atomic.Int32
 	recentHours atomic.Int64
 	postCalls   atomic.Int32
+	replyCalls  atomic.Int32
 	feedCalls   atomic.Int32
 	heartbeats  atomic.Int32
 }
@@ -89,11 +91,10 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": true})
 		case "/post", "/post-video":
 			fixture.postCalls.Add(1)
-			if opts.post != nil {
-				opts.post(w, r, fixture.item)
-				return
-			}
-			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.invalid/fixture/status/1"})
+			confirm(t, w, r, &fixture.item, opts.post, "https://x.invalid/fixture/status/1")
+		case "/reply":
+			fixture.replyCalls.Add(1)
+			confirm(t, w, r, &fixture.item, opts.reply, "https://x.invalid/fixture/status/2")
 		default:
 			if opts.content != nil {
 				opts.content(w, r)
@@ -157,6 +158,16 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 		status: operational.New(10 * time.Minute),
 	}
 	return fixture
+}
+
+// confirm delegates to handler, or confirms publication at url.
+func confirm(t *testing.T, w http.ResponseWriter, r *http.Request, item *feed.Item, handler func(http.ResponseWriter, *http.Request, feed.Item), url string) {
+	t.Helper()
+	if handler != nil {
+		handler(w, r, *item)
+		return
+	}
+	testutil.JSON(t, w, http.StatusOK, map[string]any{"url": url})
 }
 
 // poll requires a successful workflow run and returns the primary item's state.

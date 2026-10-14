@@ -6,6 +6,7 @@
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
 //   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
+//   POST /reply -> reply to an own post: { text, inReplyTo: status URL }
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -61,6 +62,7 @@ const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
+const STATUS_URL = /^https:\/\/x\.com\/(\w{1,15})\/status\/(\d+)$/;
 
 let context;
 let tab;
@@ -358,6 +360,76 @@ async function runSessionChecks() {
   }
 }
 
+// Returns the post ID of a status URL on this account, or null.
+function ownStatusID(url) {
+  const match = typeof url === 'string' && STATUS_URL.exec(url);
+  return match && match[1].toLowerCase() === USERNAME?.toLowerCase() ? match[2] : null;
+}
+
+// Fallback requires verified cleanup of failed attachments and dialogs.
+async function resetComposer(page, throwIfGone) {
+  throwIfGone();
+  await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
+  await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
+  if (await page.locator(`[role="dialog"]:visible, ${ANY_ATTACHMENT}`).count()) {
+    throw new Error('composer recovery could not be verified');
+  }
+  throwIfGone();
+}
+
+function composer(page) {
+  const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
+  return { dialog, box: dialog.locator('[data-testid="tweetTextarea_0"]').first() };
+}
+
+// Close the open composer without saving a draft.
+async function discardComposer(page, dialog) {
+  await page.keyboard.press('Escape');
+  // "Save post?" sheet: confirm saves a draft, cancel discards.
+  await humanClick(page, page.locator('[data-testid="confirmationSheetCancel"]'));
+  await dialog.waitFor({ state: 'detached', timeout: 15_000 });
+}
+
+// Click Post and return X's confirmation; clicked() marks the press that can publish.
+async function publish(page, dialog, signal, { throwIfGone, clicked, inReplyTo }) {
+  const release = new AbortController();
+  const response = waitForPostResponse(page, { signal: AbortSignal.any([signal, release.signal]) });
+  // A failed click can leave this rejection unawaited.
+  response.catch(() => {});
+  try {
+    await humanClick(page, dialog.locator('[data-testid="tweetButton"]'), { throwIfCancelled: throwIfGone, onPress: clicked });
+    const body = await (await response).json();
+    const result = parseCreateTweetResponse(body, USERNAME, { inReplyTo });
+    await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
+    return result;
+  } finally {
+    release.abort();
+  }
+}
+
+// Describe a failed publication after verifying a clean composer.
+// A failed recovery is a service failure, never a media failure.
+async function publicationError(page, cause, { clicked, recover, ...details }) {
+  // AbortSignal throws a DOMException with a read-only message.
+  const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...details });
+  if (page && clicked) {
+    const banner = page.getByText(MEDIA_UPLOAD_FAILED);
+    if (await banner.isVisible().catch(() => false)) {
+      const message = await banner.innerText({ timeout: 1000 }).catch(() => '');
+      if (message) err.message += ` (X: ${message})`;
+    }
+  }
+  if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
+  if (clicked) err.message += ' (after clicking post; it may be on X)';
+  try {
+    await recover();
+  } catch (recovery) {
+    err.stage = 'service';
+    err.message += ` (recovery failed: ${recovery.message})`;
+  }
+  return err;
+}
+
 // Abandon disconnected requests before the click; no client remains to record the outcome.
 // videoFile is server-owned; request payloads must never supply local paths.
 async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFile) {
@@ -371,16 +443,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
   let clicked = false;
   let cancelledPage;
   const closeOnCancel = () => { cancelledPage = page.close().catch(() => {}); };
-  // Fallback requires verified cleanup of failed attachments and caption dialogs.
-  const resetComposer = async () => {
-    throwIfGone();
-    await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-    await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
-    if (await page.locator(`[role="dialog"]:visible, ${ANY_ATTACHMENT}`).count()) {
-      throw new Error('composer recovery could not be verified');
-    }
-    throwIfGone();
-  };
   const mediaOperation = async (stage, operation) => {
     throwIfGone();
     try {
@@ -407,8 +469,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
       }
 
       await humanClick(page, page.locator('[data-testid="SideNav_NewTweet_Button"]'));
-      const dialog = page.locator('[role="dialog"][aria-modal="true"]').filter({ has: page.locator('[data-testid="tweetTextarea_0"]') });
-      const box = dialog.locator('[data-testid="tweetTextarea_0"]').first();
+      const { dialog, box } = composer(page);
       await box.waitFor();
       if (await dialog.locator(ANY_ATTACHMENT).count()) {
         throw new Error('new composer contains stale media');
@@ -429,7 +490,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
             caption.fallbackReason = `caption attachment: ${err.message}`;
             log('video without captions:', caption.fallbackReason);
             srt = undefined;
-            await resetComposer();
+            await resetComposer(page, throwIfGone);
             continue; // One clean re-upload; no repeated transcription or caption attempt.
           }
         }
@@ -438,7 +499,6 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         await mediaOperation('image', () => uploadImage(page, dialog, image, { throwIfCancelled: throwIfGone }));
       }
 
-      const button = dialog.locator('[data-testid="tweetButton"]');
       await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
       // Allow delayed overlays and attachment changes to appear before the final checks.
       await pause(1500, 4000);
@@ -456,27 +516,12 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
 
       if (dryRun) {
         const file = await screenshot(page, 'dry-run');
-        await page.keyboard.press('Escape');
-        // "Save post?" sheet: confirm saves a draft, cancel discards.
-        await humanClick(page, page.locator('[data-testid="confirmationSheetCancel"]'));
-        await dialog.waitFor({ state: 'detached', timeout: 15_000 });
+        await discardComposer(page, dialog);
         return { dryRun: true, screenshot: file };
       }
 
-      const release = new AbortController();
-      const response = waitForPostResponse(page, { signal: AbortSignal.any([signal, release.signal]) });
-      // A failed click can leave this rejection unawaited.
-      response.catch(() => {});
       try {
-        await humanClick(page, button, {
-          throwIfCancelled: throwIfGone,
-          onPress: () => {
-            clicked = true;
-          },
-        });
-        const body = await (await response).json();
-        const result = parseCreateTweetResponse(body, USERNAME);
-        await dialog.waitFor({ state: 'detached', timeout: 15_000 }).catch(() => {});
+        const result = await publish(page, dialog, signal, { throwIfGone, clicked: () => { clicked = true; } });
         return { ...result, ...caption };
       } catch (err) {
         if (err.stage === 'captions') {
@@ -486,33 +531,66 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
           log('video without captions on retry:', caption.fallbackReason);
         }
         throw err;
-      } finally {
-        release.abort();
       }
     }
     throw new Error('composer recovery exhausted');
   } catch (cause) {
-    // AbortSignal throws a DOMException with a read-only message.
-    const err = Object.assign(new Error(cause.message, { cause }), { stage: cause.stage, clicked, ...caption });
-    if (page && clicked) {
-      const banner = page.getByText(MEDIA_UPLOAD_FAILED);
-      if (await banner.isVisible().catch(() => false)) {
-        const message = await banner.innerText({ timeout: 1000 }).catch(() => '');
-        if (message) err.message += ` (X: ${message})`;
-      }
-    }
-    if (page) err.message += ` (screenshot: ${await screenshot(page, 'error')})`;
-    if (clicked) err.message += ' (after clicking post; it may be on X)';
-    try {
-      await resetComposer();
-    } catch (recovery) {
-      err.stage = 'service';
-      err.message += ` (recovery failed: ${recovery.message})`;
-    }
-    throw err;
+    throw await publicationError(page, cause, { clicked, recover: () => resetComposer(page, throwIfGone), ...caption });
   } finally {
     signal.removeEventListener('abort', closeOnCancel);
     // Do not release the browser queue while cancellation is still closing the tab.
+    await cancelledPage;
+  }
+}
+
+// Opens an own post and replies to it; the response must confirm that parent.
+async function createReply({ text, inReplyTo, dryRun }, signal) {
+  const throwIfGone = () => signal.throwIfAborted();
+  throwIfGone();
+  const id = ownStatusID(inReplyTo);
+  let page;
+  let clicked = false;
+  let cancelledPage;
+  const closeOnCancel = () => { cancelledPage = page.close().catch(() => {}); };
+  try {
+    page = await getTab();
+    throwIfGone();
+    signal.addEventListener('abort', closeOnCancel, { once: true });
+    await ensureLoggedIn(page);
+    await pause(2000, 5000);
+    throwIfGone();
+    await page.goto(`https://x.com/${USERNAME}/status/${id}`, { waitUntil: 'domcontentloaded' });
+    // Its timestamp links to the post itself; replies below link to their own IDs.
+    const post = page.locator('article[data-testid="tweet"]').filter({ has: page.locator(`a[href$="/status/${id}" i] time`) }).first();
+    await post.waitFor();
+    await pause(1500, 4000);
+    throwIfGone();
+
+    await humanClick(page, post.locator('[data-testid="reply"]'));
+    const { dialog, box } = composer(page);
+    await box.waitFor();
+    if (await dialog.locator(ANY_ATTACHMENT).count()) {
+      throw new Error('new reply composer contains stale media');
+    }
+    await pause(500, 1500);
+    await humanClick(page, box);
+    await humanType(page, text);
+    await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
+    // Leave time for the link preview before the final checks.
+    await pause(1500, 4000);
+    await acknowledgeNotice(page);
+    throwIfGone();
+
+    if (dryRun) {
+      const file = await screenshot(page, 'dry-run-reply');
+      await discardComposer(page, dialog);
+      return { dryRun: true, screenshot: file };
+    }
+    return await publish(page, dialog, signal, { throwIfGone, clicked: () => { clicked = true; }, inReplyTo: id });
+  } catch (cause) {
+    throw await publicationError(page, cause, { clicked, recover: () => resetComposer(page, throwIfGone) });
+  } finally {
+    signal.removeEventListener('abort', closeOnCancel);
     await cancelledPage;
   }
 }
@@ -541,6 +619,10 @@ async function recentPosts(hours) {
     await pause(1000, 2500);
     await humanClick(page, page.locator('[data-testid="AppTabBar_Profile_Link"]'));
     await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
+    await pause(1000, 2500);
+    // Only the Replies tab lists link replies; the Posts tab's responses are ignored.
+    await humanClick(page, page.locator('a[role="tab"][href$="/with_replies" i]'));
+    await page.waitForURL(new RegExp(`x\\.com/${USERNAME}/with_replies$`, 'i'));
     await page.locator('article').first().waitFor();
     await pause(1500, 3000);
     for (let i = 0; i < 8; i++) {
@@ -565,15 +647,16 @@ function send(res, status, body) {
   res.end(JSON.stringify(body));
 }
 
-async function postAndSend(res, post, videoFile) {
-  log(videoFile ? 'posting video:' : 'posting:', post.text.split('\n')[0].slice(0, 100));
+async function postAndSend(res, post, videoFile, create = createPost) {
+  const kind = (videoFile && 'video') || (create === createReply && 'reply');
+  log(kind ? `posting ${kind}:` : 'posting:', post.text.split('\n')[0].slice(0, 100));
   const controller = new AbortController();
   if (res.destroyed) controller.abort();
   else res.once('close', () => controller.abort());
   // Transcribe inside the queue so posts keep their request order.
   // The budget covers queueing, transcription, at most two uploads and confirmation.
   const signal = AbortSignal.any([controller.signal, AbortSignal.timeout(videoFile ? VIDEO_POST_TIMEOUT_MS : POST_TIMEOUT_MS)]);
-  const result = await exclusive(() => createPost(post, signal, videoFile));
+  const result = await exclusive(() => create(post, signal, videoFile));
   log(result.dryRun ? 'dry run done' : 'posted', result.url || result.screenshot);
   send(res, 200, result);
 }
@@ -616,6 +699,16 @@ export const server = http.createServer(async (req, res) => {
         return send(res, 400, { error: 'image needs mime and data' });
       }
       return await postAndSend(res, payload);
+    }
+    if (req.method === 'POST' && url.pathname === '/reply') {
+      const payload = await readJSON(req);
+      if (typeof payload.text !== 'string' || !payload.text.trim()) {
+        return send(res, 400, { error: 'text is required' });
+      }
+      if (!ownStatusID(payload.inReplyTo)) {
+        return send(res, 400, { error: `inReplyTo must be a post URL of @${USERNAME}` });
+      }
+      return await postAndSend(res, { text: payload.text, inReplyTo: payload.inReplyTo, dryRun: payload.dryRun }, undefined, createReply);
     }
     if (req.method === 'POST' && url.pathname === '/post-video') {
       let text;

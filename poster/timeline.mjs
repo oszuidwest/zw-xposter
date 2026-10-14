@@ -40,6 +40,23 @@ function expandedUrls(legacy, note) {
   return [...new Set(urls)];
 }
 
+// Self-replies keep their parent's URL; replies to others are not posts of the account.
+// An unknown parent author could hide a link reply, so it fails closed.
+function replyParent(legacy, ownId, username, handle) {
+  const parentId = legacy.in_reply_to_status_id_str;
+  if (parentId === undefined || parentId === null) return {};
+  const parentUser = legacy.in_reply_to_user_id_str;
+  const parentHandle = legacy.in_reply_to_screen_name;
+  const own = (ownId && parentUser === ownId)
+    || (typeof parentHandle === 'string' && parentHandle.toLowerCase() === username.toLowerCase());
+  const foreign = (ownId && parentUser && parentUser !== ownId) || (parentHandle && !own);
+  if (!/^\d+$/.test(parentId) || (!own && !foreign)) return { unreadable: true };
+  if (!own) return { foreign: true };
+  return { replyTo: `https://x.com/${parentHandle || handle || username}/status/${parentId}` };
+}
+
+// Returns null for others' posts, retweets and tombstones. Otherwise time is the post's timeline
+// position, and post is unset for own replies to others.
 function parseTweet(result, ownId, username) {
   const legacy = result?.legacy;
   const handle = screenName(result);
@@ -57,24 +74,28 @@ function parseTweet(result, ownId, username) {
   const createdAt = CREATED_AT.test(legacy?.created_at) ? new Date(legacy.created_at) : new Date(NaN);
   const note = result.note_tweet?.note_tweet_results?.result;
   const urls = expandedUrls(legacy, note);
-  if (!result.rest_id || typeof legacy?.full_text !== 'string' || Number.isNaN(createdAt.getTime()) || !urls) {
+  const parent = legacy ? replyParent(legacy, ownId, username, handle) : {};
+  if (!result.rest_id || typeof legacy?.full_text !== 'string' || Number.isNaN(createdAt.getTime()) || !urls || parent.unreadable) {
     throw new Error(`UserTweets has an unreadable own post: ${result.rest_id || 'no id'}`);
   }
 
-  return {
+  const time = createdAt.getTime();
+  if (parent.foreign) return { time };
+  return { time, post: {
     id: result.rest_id,
     url: `https://x.com/${handle || username}/status/${result.rest_id}`,
     text: note?.text || legacy.full_text,
     urls,
     createdAt: createdAt.toISOString(),
-  };
+    ...(parent.replyTo && { replyTo: parent.replyTo }),
+  } };
 }
 
 // Search pinned posts and conversation modules, but skip quotes and retweets.
-// Only unpinned top-level posts can prove the cutoff.
+// Unpinned entries prove the cutoff; a conversation module sorts by its newest own post.
 export function parseUserTweetsPayload(body, { ownId = '', username }) {
   const posts = [];
-  let oldestTopLevel = Infinity;
+  let oldestEntry = Infinity;
   let reachedEnd = false;
   let hasBottomCursor = false;
   let hasTweetOrModuleEntry = false;
@@ -85,8 +106,8 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
       continue;
     }
     if (instruction.type === 'TimelinePinEntry') {
-      const post = parseTweet(tweetResult(instruction.entry?.content?.itemContent), ownId, username);
-      if (post) posts.push(post);
+      const parsed = parseTweet(tweetResult(instruction.entry?.content?.itemContent), ownId, username);
+      if (parsed?.post) posts.push(parsed.post);
       continue;
     }
 
@@ -106,34 +127,33 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
 
       if (content?.entryType === 'TimelineTimelineItem') {
         hasTweetOrModuleEntry = true;
-        const post = parseTweet(tweetResult(content.itemContent), ownId, username);
-        if (post) {
-          posts.push(post);
-          oldestTopLevel = Math.min(oldestTopLevel, Date.parse(post.createdAt));
-        }
+        const parsed = parseTweet(tweetResult(content.itemContent), ownId, username);
+        if (parsed?.post) posts.push(parsed.post);
+        if (parsed) oldestEntry = Math.min(oldestEntry, parsed.time);
         continue;
       }
 
       if (content?.entryType === 'TimelineTimelineModule') {
         hasTweetOrModuleEntry = true;
+        let newest = -Infinity;
         for (const moduleItem of content.items || []) {
-          const post = parseTweet(tweetResult(moduleItem?.item?.itemContent), ownId, username);
-          if (post) posts.push(post);
+          const parsed = parseTweet(tweetResult(moduleItem?.item?.itemContent), ownId, username);
+          if (parsed?.post) posts.push(parsed.post);
+          if (parsed) newest = Math.max(newest, parsed.time);
         }
+        if (newest > -Infinity) oldestEntry = Math.min(oldestEntry, newest);
       }
     }
   }
   if (hasBottomCursor && !hasTweetOrModuleEntry) reachedEnd = true;
 
-  return { posts, oldestTopLevel, reachedEnd };
+  return { posts, oldestEntry, reachedEnd };
 }
 
-// Both operation names serve the account's profile timeline.
-const USER_TIMELINE_OPERATIONS = new Set(['UserTweets', 'UserOriginalsTimeline']);
-
+// The Replies tab lists the account's posts together with its link replies.
 export function isUserTimelineResponse(responseURL) {
   try {
-    return USER_TIMELINE_OPERATIONS.has(new URL(responseURL).pathname.split('/').pop());
+    return new URL(responseURL).pathname.split('/').pop() === 'UserTweetsAndReplies';
   } catch {
     return false;
   }
@@ -181,7 +201,7 @@ export function createTimelineCollector({ ownId = '', username, cutoff }) {
       for (const post of page.posts) {
         if (!found.has(post.id)) found.set(post.id, post);
       }
-      if (page.oldestTopLevel < cutoff || page.reachedEnd) reachedBoundary = true;
+      if (page.oldestEntry < cutoff || page.reachedEnd) reachedBoundary = true;
     },
 
     fail,
@@ -200,12 +220,17 @@ export function createTimelineCollector({ ownId = '', username, cutoff }) {
   };
 }
 
-export function parseCreateTweetResponse(body, username) {
+// With inReplyTo, a reply that X reports under another post is rejected.
+export function parseCreateTweetResponse(body, username, { inReplyTo } = {}) {
   const result = body?.data?.create_tweet?.tweet_results?.result;
   const id = result?.rest_id;
   if (!id) {
     const reason = errorMessages(body) || 'no tweet id in response';
     throw new Error(`X rejected the post: ${reason}`);
+  }
+  const parent = result.legacy?.in_reply_to_status_id_str;
+  if (inReplyTo && result.legacy && parent !== inReplyTo) {
+    throw new Error(`X published the reply under ${parent ? `post ${parent}` : 'no post'} instead of ${inReplyTo}`);
   }
 
   return { id, url: `https://x.com/${screenName(result) || username}/status/${id}` };
