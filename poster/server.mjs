@@ -88,8 +88,18 @@ function random(min, max) {
   return min + Math.random() * (max - min);
 }
 
+// Only the offline browser test shortens human pacing; an empty or unset value keeps it.
+// Number() would read whitespace as 0, so only a plain decimal is accepted.
+export function pacingScale(value) {
+  if (!value) return 1;
+  const scale = /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
+  if (!(scale <= 1)) throw new Error('POSTER_PACING must be a number from 0 to 1');
+  return scale;
+}
+const PACING = pacingScale(process.env.POSTER_PACING);
+
 function pause(minMs, maxMs) {
-  return sleep(random(minMs, maxMs));
+  return sleep(random(minMs, maxMs) * PACING);
 }
 
 // Keep Accept-Language and navigator.languages aligned through Chromium's profile.
