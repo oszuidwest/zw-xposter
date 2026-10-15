@@ -16,6 +16,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   process.env.X_AUTH_TOKEN = 'offline-test';
   process.env.X_PASSWORD = '';
   process.env.HEADLESS = 'true';
+  // The offline browser needs no human pacing; cancellation tests wait on explicit fixture hooks.
+  process.env.POSTER_PACING = '0';
   const srt = '1\n00:00:00,000 --> 00:00:02,500\nNieuws uit West-Brabant.\n\n';
   let failTranscription;
   let transcriptions = 0;
@@ -61,6 +63,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let captionSelected;
   let selectionAllowed;
   let holdCaptionSelection;
+  let holdPostButton;
   await context.exposeBinding('offlineCaptionSelected', () => {
     captionSelected.resolve();
     if (holdCaptionSelection) return selectionAllowed.promise;
@@ -88,6 +91,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     captionSelected = Promise.withResolvers();
     selectionAllowed = Promise.withResolvers();
     holdCaptionSelection = false;
+    holdPostButton = false;
   });
   const published = [];
   const unexpected = [];
@@ -177,6 +181,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       let body = pageHTML;
       body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
+      // A disabled Post button holds the request before the click until the test cancels it.
+      if (holdPostButton) body = body.replace('<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
       if (loggedOut) body = body.replace('data-testid="SideNav_AccountSwitcher_Button"', 'data-testid="logged-out"');
       if (failCaptionSelection) body = body.replace("document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
       return route.fulfill({ contentType: 'text/html', body });
@@ -239,6 +245,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   for (const video of [false, true]) await t.test(`cancelled ${video ? 'captions' : 'text'} never publishes`, async () => {
     holdCaptionSelection = video;
+    holdPostButton = !video;
     videoProcessing.resolve();
     const before = [...published];
     const controller = new AbortController();
