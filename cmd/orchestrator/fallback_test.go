@@ -146,12 +146,13 @@ func TestFallbackPersistsAcrossRestart(t *testing.T) {
 
 func TestLateCaptionFailureReconcilesBeforeUncaptionedRetry(t *testing.T) {
 	for _, tt := range []struct {
-		name      string
-		foundOnX  bool
-		wantPosts int32
+		name       string
+		foundOnX   bool
+		wantStatus string
+		wantPosts  int32
 	}{
-		{name: "existing post prevents retry", foundOnX: true, wantPosts: 1},
-		{name: "absent post retries without captions", wantPosts: 2},
+		{name: "existing post prevents retry", foundOnX: true, wantStatus: state.StatusPosted, wantPosts: 1},
+		{name: "absent post stays uncertain", wantStatus: state.StatusUncertain, wantPosts: 1},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			now := testNow
@@ -193,7 +194,7 @@ func TestLateCaptionFailureReconcilesBeforeUncaptionedRetry(t *testing.T) {
 			f.assertCalls(1, 1)
 			now = entry.NextAttemptAt
 			entry = f.poll()
-			testutil.Equal(t, entry.Status, state.StatusPosted)
+			testutil.Equal(t, entry.Status, tt.wantStatus)
 			testutil.Equal(t, entry.FoundOnX, tt.foundOnX)
 			testutil.Equal(t, entry.FallbackReason, reason)
 			f.assertCalls(2, tt.wantPosts)

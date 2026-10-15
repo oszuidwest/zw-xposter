@@ -166,27 +166,19 @@ func TestPollUncertainReplyIsReconciledWithoutSecondReply(t *testing.T) {
 	testutil.Equal(t, fixture.postCalls.Load(), 1)
 }
 
-func TestPollUncertainPostFoundByHeadlineOnlyAddsReply(t *testing.T) {
-	var inReplyTo string
+func TestPollUncertainPostWithoutArticleLinkWaitsForReconciliation(t *testing.T) {
 	fixture := newReplyTest(t, &pollTestOptions{
 		initial: state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage, UpdatedAt: testNow.Add(-time.Hour)},
 		recent: ownPosts(t,
 			map[string]any{"id": "1", "url": mainURL, "text": "Synthetic article https://t.co/media", "urls": []string{}},
-			// A headline that already has its link reply belongs to another article.
 			map[string]any{"id": "3", "url": "https://x.invalid/fixture/status/3", "text": "Synthetic article", "urls": []string{}},
-			map[string]any{"id": "4", "url": "https://x.invalid/fixture/status/4", "text": "Lees", "urls": []string{"https://example.invalid/other"}, "replyTo": "https://x.invalid/fixture/status/3"},
 		),
-		reply: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
-			inReplyTo, _ = decodePayload(t, r)["inReplyTo"].(string)
-			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": replyURL})
-		},
 	})
 
 	entry := fixture.poll()
-	if entry.Status != state.StatusPosted || entry.PostURL != mainURL || entry.ReplyURL != replyURL || !entry.FoundOnX {
+	if entry.Status != state.StatusUncertain || entry.PostURL != "" || entry.ReplyURL != "" {
 		t.Fatalf("entry = %#v", entry)
 	}
-	testutil.Equal(t, inReplyTo, mainURL)
 	fixture.assertCalls(1, 0)
 }
 

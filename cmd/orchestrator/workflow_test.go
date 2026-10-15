@@ -261,12 +261,20 @@ func TestPollWaitsUntilRetryIsEligible(t *testing.T) {
 			now = eligible
 			fixture.poll()
 			entry := reloadPollState(t, fixture).Items[fixture.item.GUID]
-			if fixture.postCalls.Load() != 1 || fixture.recentCalls.Load() != 1 || entry.Status != state.StatusPosted {
+			wantPosts, wantStatus := int32(1), state.StatusPosted
+			if tt.status == state.StatusUncertain {
+				wantPosts, wantStatus = 0, state.StatusUncertain
+			}
+			if fixture.postCalls.Load() != wantPosts || fixture.recentCalls.Load() != 1 || entry.Status != wantStatus {
 				t.Fatalf("eligible retry: entry=%#v, recent=%d, posts=%d", entry, fixture.recentCalls.Load(), fixture.postCalls.Load())
 			}
 			now = eligible.Add(time.Minute)
 			fixture.poll()
-			fixture.assertCalls(1, 1)
+			if tt.status == state.StatusUncertain {
+				fixture.assertCalls(1, 0)
+			} else {
+				fixture.assertCalls(1, 1)
+			}
 		})
 	}
 }

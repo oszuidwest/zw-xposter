@@ -251,7 +251,7 @@ export function parseCreateTweetResponse(body, username, { inReplyTo } = {}) {
     throw new Error(`X rejected the post: ${reason}`);
   }
   const parent = result.legacy?.in_reply_to_status_id_str;
-  if (inReplyTo && result.legacy && parent !== inReplyTo) {
+  if (inReplyTo && parent !== inReplyTo) {
     throw new Error(`X published the reply under ${parent ? `post ${parent}` : 'no post'} instead of ${inReplyTo}`);
   }
 

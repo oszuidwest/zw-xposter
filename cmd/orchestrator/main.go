@@ -423,13 +423,9 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		entry.LastError = ""
 		return a.record(item.GUID, &entry)
 	}
-	// An earlier attempt may have published the headline without saving it; only its reply remains.
-	if entry.PostURL == "" && entry.Attempts > 0 {
-		if existing := dedupe.FindHeadline(headline(item), workflow.recent); existing != nil {
-			slog.Info("post already on X without its link reply", "title", item.Title, "post", existing.URL)
-			entry.PostURL = existing.URL
-			entry.FoundOnX = true
-		}
+	// An uncertain publication must be reconciled by its article link, never by headline alone.
+	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
+		return a.record(item.GUID, &entry)
 	}
 
 	if workflow.attempted && !a.cfg.DryRun {
