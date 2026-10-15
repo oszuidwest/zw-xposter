@@ -53,6 +53,9 @@ function expandedUrls(legacy, note) {
   return [...new Set(urls)];
 }
 
+// X sends IDs as decimal strings; numbers would lose precision and arrays only coerce.
+const isDecimalID = (value) => typeof value === 'string' && /^\d+$/.test(value);
+
 // Self-replies keep their parent's URL; replies to others are not posts of the account.
 // An unknown parent author could hide a link reply, so it fails closed.
 function replyParent(legacy, ownId, username, handle) {
@@ -60,9 +63,9 @@ function replyParent(legacy, ownId, username, handle) {
   if (parentId === undefined || parentId === null) return {};
   const parentUser = legacy.in_reply_to_user_id_str;
   const parentHandle = legacy.in_reply_to_screen_name;
-  // A malformed parent user ID or handle must not decide authorship either way.
-  if (!/^\d+$/.test(parentId)
-    || (parentUser != null && !(typeof parentUser === 'string' && /^\d+$/.test(parentUser)))
+  // A malformed parent ID, parent user ID or handle must not decide authorship either way.
+  if (!isDecimalID(parentId)
+    || (parentUser != null && !isDecimalID(parentUser))
     || (parentHandle != null && typeof parentHandle !== 'string')) return { unreadable: true };
   const own = (ownId && parentUser === ownId)
     || (typeof parentHandle === 'string' && parentHandle.toLowerCase() === username.toLowerCase());

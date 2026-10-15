@@ -432,9 +432,9 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
 		return a.record(item.GUID, &entry)
 	}
-	// Waiting records nothing; it ends when X shows that reply or the other entry expires with its alert.
+	// Waiting records nothing; it ends when X shows the article link or the other entry expires with its alert.
 	if owner := a.pendingPost(item.GUID, &entry); owner != "" {
-		slog.Info("another feed entry for this article still owes its link reply; waiting", "title", item.Title, "owner_guid", owner)
+		slog.Info("another feed entry for this article is unresolved on X; waiting", "title", item.Title, "owner_guid", owner)
 		return nil
 	}
 
@@ -457,15 +457,17 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 }
 
 // pendingPost returns the GUID of another unfinished entry for the same article whose post
-// awaits its link reply, or "". Only an entry without a post waits, and only for one with a
+// awaits its link reply or may already be on X after an uncertain attempt, or "". Only an
+// entry that has no post and is not uncertain waits, and only for one that has or may have a
 // post, so entries never wait on each other.
 func (a *app) pendingPost(guid string, entry *state.Entry) string {
-	if entry.PostURL != "" {
+	if entry.PostURL != "" || entry.Status == state.StatusUncertain {
 		return ""
 	}
 	for other := range a.store.Items {
 		owner := a.store.Items[other]
-		if other != guid && owner.PostURL != "" && !a.store.Done(other) && dedupe.SameLink(entry.Link, owner.Link) {
+		mayBeOnX := owner.PostURL != "" || owner.Status == state.StatusUncertain
+		if other != guid && mayBeOnX && !a.store.Done(other) && dedupe.SameLink(entry.Link, owner.Link) {
 			return other
 		}
 	}

@@ -302,6 +302,9 @@ func TestPollOtherGUIDWaitsOnlyForUnfinishedOwner(t *testing.T) {
 		// An unlisted owner still expires with an alert, so waiting cannot last forever.
 		{"unlisted owner", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}, true},
 		{"unlisted uncertain owner", state.Entry{Status: state.StatusUncertain, Attempts: 1, PostURL: mainURL}, true},
+		// Its lost response may hide a headline already on X.
+		{"uncertain owner without a post", state.Entry{Status: state.StatusUncertain, Attempts: 1}, true},
+		{"retry owner without a post", state.Entry{Status: state.StatusRetry, Attempts: 1, NextAttemptAt: testNow.Add(time.Hour)}, false},
 		// The owner gave up with an alert; the new entry publishes the article itself.
 		{"expired owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, PostURL: mainURL}, false},
 		{"other article", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL, Link: "https://example.invalid/other"}, false},
@@ -407,4 +410,14 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 			testutil.Equal(t, fixture.app.store.Items["guid-1"].Status, state.StatusPosted)
 		})
 	}
+}
+
+func TestPendingPostNeverMakesUncertainEntriesWait(t *testing.T) {
+	fixture := newReplyTest(t, &pollTestOptions{})
+	addArticleEntry(fixture, "guid-0", &state.Entry{Status: state.StatusUncertain, Attempts: 1})
+	entry := state.Entry{Status: state.StatusRetry, Attempts: 1, Link: fixture.item.Link}
+	testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &entry), "guid-0")
+	// An uncertain entry is reconciled by its own link and must never wait, or two could wait on each other.
+	entry.Status = state.StatusUncertain
+	testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &entry), "")
 }

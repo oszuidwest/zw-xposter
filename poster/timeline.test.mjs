@@ -451,6 +451,13 @@ for (const [name, change] of [
   ['a malformed parent ID', (legacy) => {
     legacy.in_reply_to_status_id_str = 'x';
   }],
+  // A number would round the ID, so the link reply would not match its post.
+  ['a numeric rather than string parent ID', (legacy) => {
+    legacy.in_reply_to_status_id_str = Number(legacy.in_reply_to_status_id_str);
+  }],
+  ['a parent ID inside an array', (legacy) => {
+    legacy.in_reply_to_status_id_str = [legacy.in_reply_to_status_id_str];
+  }],
   ['a non-numeric parent user ID beside its own handle', (legacy) => {
     legacy.in_reply_to_user_id_str = {};
   }],
