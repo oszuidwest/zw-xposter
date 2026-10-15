@@ -251,17 +251,27 @@ func TestPollDryRunPredictsReplyWithoutPosting(t *testing.T) {
 	}
 }
 
+// addArticleEntry stores another feed entry, for the fixture's article unless entry has a link.
+func addArticleEntry(fixture *pollTest, guid string, entry *state.Entry) {
+	entry.Link = cmp.Or(entry.Link, fixture.item.Link)
+	if entry.PublishedAt.IsZero() {
+		entry.PublishedAt = testNow
+	}
+	fixture.app.store.SetAt(guid, entry, testNow.Add(-time.Hour))
+}
+
 func TestPollOtherGUIDWaitsWhileOwnerCanStillReply(t *testing.T) {
 	other := feed.Item{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow}
 	for _, tt := range []struct {
-		name           string
-		initial        state.Entry
-		posts, replies int32
+		name    string
+		initial state.Entry
+		// Post and reply attempts of the first entry.
+		calls int32
 	}{
 		// The first entry's reply fails in the same poll, so X shows no link yet.
-		{"same poll", state.Entry{}, 1, 1},
+		{"same poll", state.Entry{}, 1},
 		// The first entry waits for its reply retry when the second appears.
-		{"later poll", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL, NextAttemptAt: testNow.Add(time.Hour)}, 0, 0},
+		{"later poll", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL, NextAttemptAt: testNow.Add(time.Hour)}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newReplyTest(t, &pollTestOptions{
@@ -271,17 +281,14 @@ func TestPollOtherGUIDWaitsWhileOwnerCanStillReply(t *testing.T) {
 					testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{"error": "reply button missing", "clicked": false})
 				},
 			})
-			fixture.poll()
-			// Waiting saves nothing, so the stored state is read in memory.
-			saved := fixture.app.store
-			if first := saved.Items["guid-1"]; first.Status != state.StatusRetry || first.PostURL != mainURL || first.ReplyURL != "" {
+			if first := fixture.poll(); first.Status != state.StatusRetry || first.PostURL != mainURL || first.ReplyURL != "" {
 				t.Fatalf("first = %#v", first)
 			}
-			if second, ok := saved.Items["guid-2"]; ok {
+			if second, ok := fixture.app.store.Items["guid-2"]; ok {
 				t.Fatalf("second must stay untouched while the first can reply: %#v", second)
 			}
-			testutil.Equal(t, fixture.postCalls.Load(), tt.posts)
-			testutil.Equal(t, fixture.replyCalls.Load(), tt.replies)
+			fixture.assertCalls(1, tt.calls)
+			testutil.Equal(t, fixture.replyCalls.Load(), tt.calls)
 		})
 	}
 }
@@ -301,9 +308,7 @@ func TestPollOtherGUIDWaitsOnlyForUnfinishedOwner(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newReplyTest(t, &pollTestOptions{})
-			owner := tt.owner
-			owner.Title, owner.Link, owner.PublishedAt = "Same article", cmp.Or(owner.Link, fixture.item.Link), testNow
-			fixture.app.store.SetAt("guid-0", &owner, testNow.Add(-time.Hour))
+			addArticleEntry(fixture, "guid-0", &tt.owner)
 			entry := fixture.poll()
 			if tt.wait {
 				if entry.Status != "" {
@@ -347,16 +352,13 @@ func TestPollPendingReplyIgnoresLinkUnderAnotherPost(t *testing.T) {
 func TestPollReplayWaitsForExpiringOwnerThenPublishes(t *testing.T) {
 	fixture := newReplyTest(t, &pollTestOptions{
 		published: testNow.Add(-72 * time.Hour),
-		initial:   state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage},
-		// The owner is listed but past MAX_AGE; the older replayed entry is processed first.
+		initial:   state.Entry{Status: state.StatusRetry},
+		// The owner is listed but past MAX_AGE; the replayed entry comes first in the feed,
+		// so it waits before the owner expires.
 		extra: []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow.Add(-25 * time.Hour)}},
 	})
 	testutil.NoError(t, fixture.app.replay(t.Context(), fixture.item.GUID))
-	owner := state.Entry{
-		Title: "Same article", Link: fixture.item.Link, Status: state.StatusRetry, Attempts: 2,
-		PostURL: mainURL, PublishedAt: testNow.Add(-25 * time.Hour),
-	}
-	fixture.app.store.SetAt("guid-2", &owner, testNow.Add(-time.Hour))
+	addArticleEntry(fixture, "guid-2", &state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: mainURL, PublishedAt: testNow.Add(-25 * time.Hour)})
 
 	entry := fixture.poll()
 	if entry.Status != state.StatusRetry || entry.PostURL != "" {
@@ -376,14 +378,14 @@ func TestPollReplayWaitsForExpiringOwnerThenPublishes(t *testing.T) {
 func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 	const otherPost = "https://x.invalid/fixture/status/7"
 	for _, tt := range []struct {
-		name           string
-		first, second  state.Entry
-		posts, replies int32
+		name          string
+		first, second state.Entry
+		posts         int32
 	}{
 		// Neither has a post on X, so the first publishes and the second finds its link reply.
-		{"no posts yet", state.Entry{Status: state.StatusRetry, Attempts: 1}, state.Entry{Status: state.StatusRetry, Attempts: 1}, 1, 1},
+		{"no posts yet", state.Entry{Status: state.StatusRetry, Attempts: 1}, state.Entry{Status: state.StatusRetry, Attempts: 1}, 1},
 		// An entry with its own post replies under it instead of waiting.
-		{"own post", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: otherPost, NextAttemptAt: testNow.Add(time.Hour)}, 0, 1},
+		{"own post", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: otherPost, NextAttemptAt: testNow.Add(time.Hour)}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var inReplyTo []string
@@ -396,13 +398,11 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": replyURL})
 				},
 			})
-			second := tt.second
-			second.Title, second.Link, second.PublishedAt = "Same article", fixture.item.Link, testNow
-			fixture.app.store.SetAt("guid-2", &second, testNow.Add(-time.Hour))
+			addArticleEntry(fixture, "guid-2", &tt.second)
 
 			fixture.poll()
-			testutil.Equal(t, fixture.postCalls.Load(), tt.posts)
-			testutil.Equal(t, fixture.replyCalls.Load(), tt.replies)
+			fixture.assertCalls(1, tt.posts)
+			// Exactly one reply, under the first entry's post.
 			testutil.Equal(t, strings.Join(inReplyTo, " "), mainURL)
 			testutil.Equal(t, fixture.app.store.Items["guid-1"].Status, state.StatusPosted)
 		})

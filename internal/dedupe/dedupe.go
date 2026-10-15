@@ -57,12 +57,9 @@ func RepliesTo(parent string, posts []poster.Post) []poster.Post {
 
 // SameLink reports whether a and b link to the same article, matched as Find matches URLs.
 func SameLink(a, b string) bool {
-	hostA, pathA, ok := split(a)
-	if !ok {
-		return false
-	}
-	hostB, pathB, ok := split(b)
-	return ok && hostA == hostB && pathA == pathB
+	hostA, pathA, okA := split(a)
+	hostB, pathB, okB := split(b)
+	return okA && okB && hostA == hostB && pathA == pathB
 }
 
 // statusID returns the post ID in a status URL.

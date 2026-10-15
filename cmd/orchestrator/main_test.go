@@ -387,6 +387,19 @@ func TestPollCancellationDuringPostBecomesUncertain(t *testing.T) {
 	}
 }
 
+func TestBeginAttemptSavesBeforeReportingCancellation(t *testing.T) {
+	fixture := newPollTest(t, &pollTestOptions{})
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	entry := state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}
+	testutil.ErrorContains(t, fixture.app.beginAttempt(ctx, fixture.item.GUID, &entry), context.Canceled.Error())
+	// The attempt is on disk, so recovery can mark it uncertain before any retry.
+	saved := reloadPollState(t, fixture).Items[fixture.item.GUID]
+	if saved.Status != state.StatusPosting || saved.Attempts != 2 || saved.PostURL != mainURL {
+		t.Fatalf("saved = %#v", saved)
+	}
+}
+
 func TestPollDoesNotPostWhenWriteAheadSaveFails(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{initial: state.Entry{Status: state.StatusRetry, Format: "text"}})
 	blockStateSave(t, fixture.app.cfg.StateFile)

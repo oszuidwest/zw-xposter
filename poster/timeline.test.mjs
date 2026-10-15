@@ -454,6 +454,9 @@ for (const [name, change] of [
   ['a non-numeric parent user ID beside its own handle', (legacy) => {
     legacy.in_reply_to_user_id_str = {};
   }],
+  ['a numeric rather than string parent user ID', (legacy) => {
+    legacy.in_reply_to_user_id_str = Number(account.ownId);
+  }],
   ['a non-string parent handle beside its own user ID', (legacy) => {
     legacy.in_reply_to_screen_name = 5;
   }],
@@ -468,6 +471,13 @@ for (const [name, change] of [
     assertUnreadable(body);
   });
 }
+
+test('a reply is recognized as a self-reply by the parent user ID alone', () => {
+  const body = replyPage();
+  delete moduleResult(body, 1).legacy.in_reply_to_screen_name;
+  const { posts } = parseUserTweetsPayload(body, account);
+  assert.equal(posts[1].replyTo, 'https://x.com/fixture_account/status/900000000000000901');
+});
 
 test('a reply is recognized as a self-reply by the parent handle alone', () => {
   const body = replyPage();
