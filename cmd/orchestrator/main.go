@@ -412,7 +412,12 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		workflow.recentLoaded = true
 		a.status.RecordXCheck(a.now())
 	}
-	if existing := dedupe.Find(item.Link, workflow.recent); existing != nil {
+	candidates := workflow.recent
+	if entry.PostURL != "" {
+		// Only a link reply under this article's own post completes it.
+		candidates = dedupe.RepliesTo(entry.PostURL, workflow.recent)
+	}
+	if existing := dedupe.Find(item.Link, candidates); existing != nil {
 		slog.Info("already on X, not posting", "title", item.Title, "post", existing.URL)
 		entry.Status = state.StatusPosted
 		entry.PostURL = existing.URL
@@ -426,6 +431,11 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	// An uncertain publication must be reconciled by its article link, never by headline alone.
 	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
 		return a.record(item.GUID, &entry)
+	}
+	// Waiting records nothing; it ends when X shows that reply or the other entry expires with its alert.
+	if owner := a.pendingPost(item.GUID, &entry); owner != "" {
+		slog.Info("another feed entry for this article still owes its link reply; waiting", "title", item.Title, "owner_guid", owner)
+		return nil
 	}
 
 	if workflow.attempted && !a.cfg.DryRun {
@@ -444,6 +454,22 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	workflow.attempted = true
 	return nil
+}
+
+// pendingPost returns the GUID of another unfinished entry for the same article whose post
+// awaits its link reply, or "". Only an entry without a post waits, and only for one with a
+// post, so entries never wait on each other.
+func (a *app) pendingPost(guid string, entry *state.Entry) string {
+	if entry.PostURL != "" {
+		return ""
+	}
+	for other := range a.store.Items {
+		owner := a.store.Items[other]
+		if other != guid && owner.PostURL != "" && !a.store.Done(other) && dedupe.SameLink(entry.Link, owner.Link) {
+			return other
+		}
+	}
+	return ""
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -551,16 +577,12 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 			return a.record(item.GUID, entry)
 		}
 
-		if err := a.beginAttempt(item.GUID, entry); err != nil {
+		if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
 			closeVideo()
 			return err
 		}
 		var result poster.Result
 		var postErr error
-		if err := ctx.Err(); err != nil {
-			closeVideo()
-			return err
-		}
 		if video != nil {
 			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == state.FormatVideoCaptions)
 		} else {
@@ -610,7 +632,7 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 		return nil, a.record(item.GUID, entry)
 	}
 
-	if err := a.beginAttempt(item.GUID, entry); err != nil {
+	if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
 		return nil, err
 	}
 	url, err := a.poster.Reply(ctx, entry.PostURL, text)
@@ -626,14 +648,15 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 }
 
 // beginAttempt saves the attempt before the poster call, so a crash leaves it uncertain rather than unrecorded.
-func (a *app) beginAttempt(guid string, entry *state.Entry) error {
+// A cancellation after the save stops before the call; the saved attempt is recovered as uncertain.
+func (a *app) beginAttempt(ctx context.Context, guid string, entry *state.Entry) error {
 	entry.Status = state.StatusPosting
 	entry.Attempts++
 	entry.NextAttemptAt = time.Time{}
 	if err := a.record(guid, entry); err != nil {
 		return fmt.Errorf("save write-ahead state: %w", err)
 	}
-	return nil
+	return ctx.Err()
 }
 
 // scheduleRetry delays the next attempt; only confirmed pre-click failures avoid the uncertain-outcome delay.

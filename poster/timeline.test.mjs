@@ -451,6 +451,19 @@ for (const [name, change] of [
   ['a malformed parent ID', (legacy) => {
     legacy.in_reply_to_status_id_str = 'x';
   }],
+  ['a non-numeric parent user ID beside its own handle', (legacy) => {
+    legacy.in_reply_to_user_id_str = {};
+  }],
+  ['a numeric rather than string parent user ID', (legacy) => {
+    legacy.in_reply_to_user_id_str = Number(account.ownId);
+  }],
+  ['a non-string parent handle beside its own user ID', (legacy) => {
+    legacy.in_reply_to_screen_name = 5;
+  }],
+  ['malformed parent user ID and handle', (legacy) => {
+    legacy.in_reply_to_user_id_str = {};
+    legacy.in_reply_to_screen_name = {};
+  }],
 ]) {
   test(`a reply with ${name} makes the result incomplete`, () => {
     const body = replyPage();
@@ -458,6 +471,13 @@ for (const [name, change] of [
     assertUnreadable(body);
   });
 }
+
+test('a reply is recognized as a self-reply by the parent user ID alone', () => {
+  const body = replyPage();
+  delete moduleResult(body, 1).legacy.in_reply_to_screen_name;
+  const { posts } = parseUserTweetsPayload(body, account);
+  assert.equal(posts[1].replyTo, 'https://x.com/fixture_account/status/900000000000000901');
+});
 
 test('a reply is recognized as a self-reply by the parent handle alone', () => {
   const body = replyPage();
@@ -479,10 +499,13 @@ test('a reply must be published under the requested post', () => {
   assert.throws(() => parseCreateTweetResponse(body('1'), 'fixture_account', { inReplyTo: '900000000000000601' }), /under post 1 instead/);
   assert.throws(() => parseCreateTweetResponse(body(), 'fixture_account', { inReplyTo: '900000000000000601' }), /under no post instead/);
 
-  const withoutLegacy = body('900000000000000601');
-  delete withoutLegacy.data.create_tweet.tweet_results.result.legacy;
-  assert.throws(
-    () => parseCreateTweetResponse(withoutLegacy, 'fixture_account', { inReplyTo: '900000000000000601' }),
-    /under no post instead/,
-  );
+  for (const [name, change] of [['absent', (result) => delete result.legacy], ['null', (result) => { result.legacy = null; }]]) {
+    const response = body('900000000000000601');
+    change(response.data.create_tweet.tweet_results.result);
+    assert.throws(
+      () => parseCreateTweetResponse(response, 'fixture_account', { inReplyTo: '900000000000000601' }),
+      /under no post instead/,
+      `${name} legacy`,
+    );
+  }
 });

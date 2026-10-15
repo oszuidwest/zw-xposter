@@ -2,9 +2,7 @@
 package dedupe
 
 import (
-	"html"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
@@ -42,39 +40,29 @@ func Find(link string, posts []poster.Post) *poster.Post {
 
 const zeroWidthSpace = "\u200b"
 
-// FindHeadline returns an own top-level post whose text is headline, or nil.
-//
-// It finds headline-only posts whose link reply is missing. Posts that already
-// have a linked reply belong to an article and are skipped; X's media links and
-// HTML escapes are ignored.
-func FindHeadline(headline string, posts []poster.Post) *poster.Post {
-	want := plainText(headline)
-	if want == "" {
+// RepliesTo returns the replies to the post at parent; status IDs match, so handle spelling cannot matter.
+func RepliesTo(parent string, posts []poster.Post) []poster.Post {
+	id := statusID(parent)
+	if id == "" {
 		return nil
 	}
-	linked := make(map[string]bool)
+	var replies []poster.Post
 	for _, post := range posts {
-		if post.ReplyTo != "" && len(post.URLs) > 0 {
-			linked[statusID(post.ReplyTo)] = true
+		if statusID(post.ReplyTo) == id {
+			replies = append(replies, post)
 		}
 	}
-	for i := range posts {
-		post := &posts[i]
-		if post.ReplyTo == "" && !linked[statusID(post.URL)] && plainText(post.Text) == want {
-			return post
-		}
-	}
-	return nil
+	return replies
 }
 
-var shortLink = regexp.MustCompile(`https://t\.co/\S+`)
-
-func plainText(text string) string {
-	text = shortLink.ReplaceAllString(html.UnescapeString(text), "")
-	return strings.Join(strings.Fields(text), " ")
+// SameLink reports whether a and b link to the same article, matched as Find matches URLs.
+func SameLink(a, b string) bool {
+	hostA, pathA, okA := split(a)
+	hostB, pathB, okB := split(b)
+	return okA && okB && hostA == hostB && pathA == pathB
 }
 
-// statusID returns the post ID in a status URL, so handle case and spelling cannot matter.
+// statusID returns the post ID in a status URL.
 func statusID(raw string) string {
 	_, id, ok := strings.Cut(raw, "/status/")
 	if !ok {
