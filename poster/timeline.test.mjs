@@ -176,6 +176,17 @@ for (const [name, ownId, change] of [
     delete post.core;
     delete post.legacy;
   }],
+  // A number rounds the ID, so it would look like another account and hide the post.
+  ['a numeric rather than string user ID and no handle', account.ownId, (post) => {
+    delete post.core;
+    post.legacy.user_id_str = Number(account.ownId);
+  }],
+  ['a malformed user ID beside its own handle', account.ownId, (post) => {
+    post.legacy.user_id_str = {};
+  }],
+  ['a non-string handle beside its own user ID', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 5;
+  }],
 ]) {
   test(`a post with ${name} makes the result incomplete`, async () => {
     assertUnreadable(await withFirstPost(fixture('user-tweets-page-1.json'), change), /without a readable author/, ownId);

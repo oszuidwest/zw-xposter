@@ -53,6 +53,9 @@ function expandedUrls(legacy, note) {
   return [...new Set(urls)];
 }
 
+// X sends IDs as decimal strings; numbers would lose precision and arrays only coerce.
+const isDecimalID = (value) => typeof value === 'string' && /^\d+$/.test(value);
+
 // Self-replies keep their parent's URL; replies to others are not posts of the account.
 // An unknown parent author could hide a link reply, so it fails closed.
 function replyParent(legacy, ownId, username, handle) {
@@ -74,6 +77,10 @@ function parseTweet(result, ownId, username) {
   const legacy = result?.legacy;
   const handle = screenName(result);
   const authorId = legacy?.user_id_str;
+  // A malformed author ID or handle must not decide authorship either way.
+  if ((authorId != null && !isDecimalID(authorId)) || (handle != null && typeof handle !== 'string')) {
+    throw new Error(`UserTweets has a post without a readable author: ${result.rest_id || 'no id'}`);
+  }
   const own = (ownId && authorId === ownId)
     || handle?.toLowerCase() === username.toLowerCase();
   const foreign = (ownId && authorId && authorId !== ownId) || (handle && !own);
