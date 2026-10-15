@@ -177,21 +177,23 @@ func TestClientPostRequiresConfirmation(t *testing.T) {
 func TestClientReply(t *testing.T) {
 	t.Parallel()
 
-	const parent = "https://x.com/fixture_account/status/900000000000000601"
+	const (
+		parent = "https://x.com/fixture_account/status/900000000000000601"
+		reply  = "https://x.com/fixture_account/status/900000000000000602"
+		text   = "👉 Lees het hele verhaal: https://example.invalid/article"
+	)
 	server := testutil.Server(t, func(w http.ResponseWriter, r *http.Request) {
 		testutil.Equal(t, r.URL.Path, "/reply")
 		var body map[string]string
 		testutil.NoError(t, json.NewDecoder(r.Body).Decode(&body))
 		testutil.Equal(t, body["inReplyTo"], parent)
-		testutil.Equal(t, body["text"], "👉 Lees het hele verhaal: https://example.invalid/article")
-		if body["inReplyTo"] == parent {
-			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": "https://x.com/fixture_account/status/900000000000000602"})
-		}
+		testutil.Equal(t, body["text"], text)
+		testutil.JSON(t, w, http.StatusOK, map[string]any{"url": reply})
 	})
 
-	url, err := New(server.URL).Reply(t.Context(), parent, "👉 Lees het hele verhaal: https://example.invalid/article")
+	url, err := New(server.URL).Reply(t.Context(), parent, text)
 	testutil.NoError(t, err)
-	testutil.Equal(t, url, "https://x.com/fixture_account/status/900000000000000602")
+	testutil.Equal(t, url, reply)
 }
 
 func TestClientReplyError(t *testing.T) {

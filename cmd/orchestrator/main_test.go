@@ -91,10 +91,10 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": true})
 		case "/post", "/post-video":
 			fixture.postCalls.Add(1)
-			confirm(t, w, r, &fixture.item, opts.post, "https://x.invalid/fixture/status/1")
+			confirm(t, w, r, &fixture.item, opts.post, mainURL)
 		case "/reply":
 			fixture.replyCalls.Add(1)
-			confirm(t, w, r, &fixture.item, opts.reply, "https://x.invalid/fixture/status/2")
+			confirm(t, w, r, &fixture.item, opts.reply, replyURL)
 		default:
 			if opts.content != nil {
 				opts.content(w, r)
@@ -159,6 +159,12 @@ func newPollTest(t *testing.T, opts *pollTestOptions) *pollTest {
 	}
 	return fixture
 }
+
+// Default URLs that the fixture poster confirms for posts and replies.
+const (
+	mainURL  = "https://x.invalid/fixture/status/1"
+	replyURL = "https://x.invalid/fixture/status/2"
+)
 
 // confirm delegates to handler, or confirms publication at url.
 func confirm(t *testing.T, w http.ResponseWriter, r *http.Request, item *feed.Item, handler func(http.ResponseWriter, *http.Request, feed.Item), url string) {

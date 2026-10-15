@@ -110,10 +110,10 @@ func TestLoadLinkInReply(t *testing.T) {
 		wantText  string
 		wantError string
 	}{
-		{name: "defaults", wantOn: true, wantText: DefaultReplyText},
-		{name: "disabled", enabled: "false", wantText: DefaultReplyText},
+		{name: "defaults", wantOn: true, wantText: defaultReplyText},
+		{name: "disabled", enabled: "false", wantText: defaultReplyText},
 		{name: "custom text is trimmed", text: "  Lees meer 👇 ", wantOn: true, wantText: "Lees meer 👇"},
-		{name: "blank text uses the default", text: " ", wantOn: true, wantText: DefaultReplyText},
+		{name: "blank text uses the default", text: " ", wantOn: true, wantText: defaultReplyText},
 		{name: "invalid switch", enabled: "sometimes", wantError: "LINK_IN_REPLY"},
 		{name: "text too long", text: strings.Repeat("é", 201), wantError: "REPLY_TEXT must be at most 200 characters"},
 	}

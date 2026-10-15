@@ -6,7 +6,7 @@
 //   GET /recent?hours=48 -> own posts, newest first; 500 if the full window is unread
 //   POST /post -> publish or dry-run; errors include whether the post was clicked
 //   POST /post-video -> binary MP4, with base64 UTF-8 text in X-Post-Text
-//   POST /reply -> reply to an own post: { text, inReplyTo: status URL }
+//   POST /reply -> reply to an own post or dry-run: { text, inReplyTo: status URL, dryRun }
 
 import http from 'node:http';
 import fs from 'node:fs/promises';
@@ -591,6 +591,7 @@ async function createReply({ text, inReplyTo, dryRun }, signal) {
     throw await publicationError(page, cause, { clicked, recover: () => resetComposer(page, throwIfGone) });
   } finally {
     signal.removeEventListener('abort', closeOnCancel);
+    // Do not release the browser queue while cancellation is still closing the tab.
     await cancelledPage;
   }
 }

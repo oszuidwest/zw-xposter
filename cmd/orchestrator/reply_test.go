@@ -13,11 +13,7 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
 
-const (
-	replyLead = "👉 Lees het hele verhaal:"
-	mainURL   = "https://x.invalid/fixture/status/1"
-	replyURL  = "https://x.invalid/fixture/status/2"
-)
+const replyLead = "👉 Lees het hele verhaal:"
 
 // newReplyTest serves an article image and enables the link reply.
 func newReplyTest(t *testing.T, opts *pollTestOptions) *pollTest {
@@ -31,7 +27,7 @@ func newReplyTest(t *testing.T, opts *pollTestOptions) *pollTest {
 	return fixture
 }
 
-func decodeText(t *testing.T, r *http.Request) map[string]any {
+func decodePayload(t *testing.T, r *http.Request) map[string]any {
 	t.Helper()
 	var payload map[string]any
 	testutil.NoError(t, json.NewDecoder(r.Body).Decode(&payload))
@@ -48,7 +44,7 @@ func TestPollLinkInReplyPostsHeadlineThenLink(t *testing.T) {
 	var postText, replyText, inReplyTo string
 	fixture := newReplyTest(t, &pollTestOptions{
 		post: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
-			payload := decodeText(t, r)
+			payload := decodePayload(t, r)
 			postText, _ = payload["text"].(string)
 			if payload["image"] == nil {
 				t.Error("the headline post must keep the article image")
@@ -56,7 +52,7 @@ func TestPollLinkInReplyPostsHeadlineThenLink(t *testing.T) {
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": mainURL})
 		},
 		reply: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
-			payload := decodeText(t, r)
+			payload := decodePayload(t, r)
 			replyText, _ = payload["text"].(string)
 			inReplyTo, _ = payload["inReplyTo"].(string)
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": replyURL})
@@ -75,22 +71,22 @@ func TestPollLinkInReplyPostsHeadlineThenLink(t *testing.T) {
 }
 
 func TestPollLinkInReplyKeepsLinkInTextPosts(t *testing.T) {
-	for _, enabled := range []bool{true, false} {
-		t.Run(map[bool]string{true: "text fallback", false: "disabled"}[enabled], func(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		content     http.HandlerFunc
+		linkInReply bool
+	}{
+		// An article page without og:image falls back to text.
+		{"text fallback", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html></html>")) }, true},
+		{"disabled", nil, false},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
 			var text string
-			opts := &pollTestOptions{post: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
-				text, _ = decodeText(t, r)["text"].(string)
+			fixture := newReplyTest(t, &pollTestOptions{content: tt.content, post: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
+				text, _ = decodePayload(t, r)["text"].(string)
 				testutil.JSON(t, w, http.StatusOK, map[string]any{"url": mainURL})
-			}}
-			var fixture *pollTest
-			if enabled {
-				// The default article page has no og:image, so the post falls back to text.
-				opts.content = func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html></html>")) }
-				fixture = newReplyTest(t, opts)
-			} else {
-				fixture = newReplyTest(t, opts)
-				fixture.app.cfg.LinkInReply = false
-			}
+			}})
+			fixture.app.cfg.LinkInReply = tt.linkInReply
 			entry := fixture.poll()
 			testutil.Equal(t, text, "Synthetic article "+fixture.item.Link)
 			testutil.Equal(t, fixture.replyCalls.Load(), 0)
@@ -181,7 +177,7 @@ func TestPollUncertainPostFoundByHeadlineOnlyAddsReply(t *testing.T) {
 			map[string]any{"id": "4", "url": "https://x.invalid/fixture/status/4", "text": "Lees", "urls": []string{"https://example.invalid/other"}, "replyTo": "https://x.invalid/fixture/status/3"},
 		),
 		reply: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
-			inReplyTo, _ = decodeText(t, r)["inReplyTo"].(string)
+			inReplyTo, _ = decodePayload(t, r)["inReplyTo"].(string)
 			testutil.JSON(t, w, http.StatusOK, map[string]any{"url": replyURL})
 		},
 	})
@@ -248,11 +244,16 @@ func TestPollRecoversInterruptedReplyAsUncertain(t *testing.T) {
 }
 
 func TestPollDryRunPredictsReplyWithoutPosting(t *testing.T) {
-	for _, initial := range []state.Entry{{}, {Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}} {
-		fixture := newReplyTest(t, &pollTestOptions{initial: initial})
-		fixture.app.cfg.DryRun = true
-		entry := fixture.poll()
-		testutil.Equal(t, entry.Status, state.StatusPosted)
-		testutil.Equal(t, fixture.postCalls.Load()+fixture.replyCalls.Load(), 0)
+	for name, initial := range map[string]state.Entry{
+		"new article":   {},
+		"reply pending": {Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fixture := newReplyTest(t, &pollTestOptions{initial: initial})
+			fixture.app.cfg.DryRun = true
+			entry := fixture.poll()
+			testutil.Equal(t, entry.Status, state.StatusPosted)
+			testutil.Equal(t, fixture.postCalls.Load()+fixture.replyCalls.Load(), 0)
+		})
 	}
 }

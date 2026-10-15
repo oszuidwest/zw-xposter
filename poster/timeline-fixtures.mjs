@@ -24,6 +24,13 @@ function entry(result) {
   } };
 }
 
+function module(...posts) {
+  return { content: {
+    entryType: 'TimelineTimelineModule',
+    items: posts.map((post) => ({ item: { itemContent: entry(post).content.itemContent } })),
+  } };
+}
+
 export function timeline(...instructions) {
   return { data: { user: { result: { timeline_v2: { timeline: { instructions } } } } } };
 }
@@ -43,11 +50,7 @@ export function pinnedPage(isRecent = false) {
 }
 
 export function modulePage(allOld = false) {
-  const posts = [tweet('900000000000000701', allOld ? old : recent), tweet('900000000000000702', old)];
-  return timeline(entries({ content: {
-    entryType: 'TimelineTimelineModule',
-    items: posts.map((post) => ({ item: { itemContent: entry(post).content.itemContent } })),
-  } }));
+  return timeline(entries(module(tweet('900000000000000701', allOld ? old : recent), tweet('900000000000000702', old))));
 }
 
 export function nestedPage(retweet = false) {
@@ -82,11 +85,7 @@ export function replyPage() {
     in_reply_to_user_id_str: '100000000000000002',
     in_reply_to_screen_name: 'other_account',
   });
-  const thread = (...items) => ({ content: {
-    entryType: 'TimelineTimelineModule',
-    items: items.map((post) => ({ item: { itemContent: entry(post).content.itemContent } })),
-  } });
-  return timeline(entries(thread(main, reply), thread(other)));
+  return timeline(entries(module(main, reply), module(other)));
 }
 
 // An older entry must not hide unreadable own posts; foreign posts and tombstones may be skipped.

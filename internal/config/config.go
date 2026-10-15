@@ -13,8 +13,8 @@ import (
 	"unicode/utf8"
 )
 
-// DefaultReplyText precedes the article link in the reply.
-const DefaultReplyText = "👉 Lees het hele verhaal:"
+// defaultReplyText precedes the article link in the reply.
+const defaultReplyText = "👉 Lees het hele verhaal:"
 
 // maxReplyTextRunes leaves room for the link, which X counts as 23 characters.
 const maxReplyTextRunes = 200
@@ -62,7 +62,7 @@ func Load() (*Config, error) {
 		PosterURL:    cmp.Or(os.Getenv("POSTER_URL"), "http://127.0.0.1:8081"),
 		StateFile:    cmp.Or(os.Getenv("STATE_FILE"), "/data/state.json"),
 		HeartbeatURL: os.Getenv("HEARTBEAT_URL"),
-		ReplyText:    cmp.Or(strings.TrimSpace(os.Getenv("REPLY_TEXT")), DefaultReplyText),
+		ReplyText:    cmp.Or(strings.TrimSpace(os.Getenv("REPLY_TEXT")), defaultReplyText),
 		Graph: GraphConfig{
 			TenantID:     os.Getenv("GRAPH_TENANT_ID"),
 			ClientID:     os.Getenv("GRAPH_CLIENT_ID"),

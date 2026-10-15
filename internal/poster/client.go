@@ -82,18 +82,7 @@ func (e *PostError) Error() string {
 
 // Post publishes text with an optional image and returns the post URL.
 func (c *Client) Post(ctx context.Context, text string, img *article.Image) (string, error) {
-	body, err := json.Marshal(request{Text: text, Image: img})
-	if err != nil {
-		return "", err
-	}
-
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post", bytes.NewReader(body))
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	result, err := c.sendPost(req, c.http)
-	return result.URL, err
+	return c.postJSON(ctx, "/post", request{Text: text, Image: img})
 }
 
 type replyRequest struct {
@@ -103,11 +92,16 @@ type replyRequest struct {
 
 // Reply publishes text as a reply to the account's own post at inReplyTo and returns the reply URL.
 func (c *Client) Reply(ctx context.Context, inReplyTo, text string) (string, error) {
-	body, err := json.Marshal(replyRequest{Text: text, InReplyTo: inReplyTo})
+	return c.postJSON(ctx, "/reply", replyRequest{Text: text, InReplyTo: inReplyTo})
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, payload any) (string, error) {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/reply", bytes.NewReader(body))
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}

@@ -166,7 +166,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
       }
-      const firstPage = failPagination === tab ? await fixture('user-tweets-page-1.json') : !continuation && profilePages?.[tab];
+      const firstPage = !continuation && profilePages?.[tab];
       return route.fulfill({
         contentType: 'application/json',
         headers: firstPage ? { 'x-offline-next': 'true' } : {},
@@ -464,6 +464,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
     await t.test(`an HTTP failure in ${name} tab pagination refuses the whole recent result`, async () => {
       failPagination = tab;
+      profilePages = { [tab]: await fixture('user-tweets-page-1.json') };
       const response = await fetch(`${base}/recent?hours=48`);
       assert.equal(response.status, 500);
       assert.match((await response.json()).error, new RegExp(`${name} tab: UserTweets returned HTTP 429`));

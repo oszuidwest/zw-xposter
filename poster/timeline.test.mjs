@@ -74,6 +74,12 @@ function firstEntryResult(body) {
   return content.itemContent.tweet_results.result;
 }
 
+// The post at index in the first entry, a conversation module.
+function moduleResult(body, index) {
+  const [instruction] = body.data.user.result.timeline_v2.timeline.instructions;
+  return instruction.entries[0].content.items[index].item.itemContent.tweet_results.result;
+}
+
 function removeAuthor(post) {
   delete post.core;
   delete post.legacy.user_id_str;
@@ -180,8 +186,7 @@ test('pinned and module posts without a readable author make the result incomple
   assertUnreadable(await withFirstPost(pinnedPage(true), removeAuthor), /without a readable author/);
 
   const module = modulePage();
-  const [instruction] = module.data.user.result.timeline_v2.timeline.instructions;
-  removeAuthor(instruction.entries[0].content.items[0].item.itemContent.tweet_results.result);
+  removeAuthor(moduleResult(module, 0));
   assertUnreadable(module, /without a readable author/);
 });
 
@@ -449,16 +454,14 @@ for (const [name, change] of [
 ]) {
   test(`a reply with ${name} makes the result incomplete`, () => {
     const body = replyPage();
-    const [instruction] = body.data.user.result.timeline_v2.timeline.instructions;
-    change(instruction.entries[0].content.items[1].item.itemContent.tweet_results.result.legacy);
+    change(moduleResult(body, 1).legacy);
     assertUnreadable(body);
   });
 }
 
 test('a reply is recognized as a self-reply by the parent handle alone', () => {
   const body = replyPage();
-  const [instruction] = body.data.user.result.timeline_v2.timeline.instructions;
-  const legacy = instruction.entries[0].content.items[1].item.itemContent.tweet_results.result.legacy;
+  const { legacy } = moduleResult(body, 1);
   delete legacy.in_reply_to_user_id_str;
   legacy.in_reply_to_screen_name = 'Fixture_Account';
   const { posts } = parseUserTweetsPayload(body, { ...account, ownId: '' });
