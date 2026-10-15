@@ -2,7 +2,9 @@
 package dedupe
 
 import (
+	"html"
 	"net/url"
+	"regexp"
 	"strings"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
@@ -39,6 +41,48 @@ func Find(link string, posts []poster.Post) *poster.Post {
 }
 
 const zeroWidthSpace = "\u200b"
+
+// FindHeadline returns an own top-level post whose text is headline, or nil.
+//
+// It finds headline-only posts whose link reply is missing. Posts that already
+// have a linked reply belong to an article and are skipped; X's media links and
+// HTML escapes are ignored.
+func FindHeadline(headline string, posts []poster.Post) *poster.Post {
+	want := plainText(headline)
+	if want == "" {
+		return nil
+	}
+	linked := make(map[string]bool)
+	for _, post := range posts {
+		if post.ReplyTo != "" && len(post.URLs) > 0 {
+			linked[statusID(post.ReplyTo)] = true
+		}
+	}
+	for i := range posts {
+		post := &posts[i]
+		if post.ReplyTo == "" && !linked[statusID(post.URL)] && plainText(post.Text) == want {
+			return post
+		}
+	}
+	return nil
+}
+
+var shortLink = regexp.MustCompile(`https://t\.co/\S+`)
+
+func plainText(text string) string {
+	text = shortLink.ReplaceAllString(html.UnescapeString(text), "")
+	return strings.Join(strings.Fields(text), " ")
+}
+
+// statusID returns the post ID in a status URL, so handle case and spelling cannot matter.
+func statusID(raw string) string {
+	_, id, ok := strings.Cut(raw, "/status/")
+	if !ok {
+		return ""
+	}
+	id, _, _ = strings.Cut(id, "/")
+	return id
+}
 
 // Empty paths are rejected so homepages cannot match articles.
 func split(raw string) (host, path string, ok bool) {

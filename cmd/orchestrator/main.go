@@ -374,7 +374,7 @@ func (a *app) alertAddedVideos(items []feed.Item, now time.Time) error {
 		a.alerts.Notify(notify.Event{
 			Key:     "workflow:video-added:" + item.GUID,
 			Summary: "Video added after posting",
-			Details: articleDetails(item.GUID, &entry) + "\nPost: " + entry.PostURL + "\nVideo: " + item.VideoURL,
+			Details: articleDetails(item.GUID, &entry) + "\nVideo: " + item.VideoURL,
 		})
 	}
 	return nil
@@ -416,8 +416,15 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		slog.Info("already on X, not posting", "title", item.Title, "post", existing.URL)
 		entry.Status = state.StatusPosted
 		entry.PostURL = existing.URL
+		if existing.ReplyTo != "" {
+			entry.PostURL, entry.ReplyURL = existing.ReplyTo, existing.URL
+		}
 		entry.FoundOnX = true
 		entry.LastError = ""
+		return a.record(item.GUID, &entry)
+	}
+	// An uncertain publication must be reconciled by its article link, never by headline alone.
+	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
 		return a.record(item.GUID, &entry)
 	}
 
@@ -428,12 +435,12 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		case <-time.After(a.cfg.PostDelay):
 		}
 	}
-	url, err := a.publish(ctx, item, &entry)
+	linked, err := a.publish(ctx, item, &entry)
 	if err != nil {
 		return err
 	}
-	if url != "" {
-		workflow.recent = append(workflow.recent, poster.Post{URL: url, URLs: []string{item.Link}})
+	if linked != nil {
+		workflow.recent = append(workflow.recent, *linked)
 	}
 	workflow.attempted = true
 	return nil
@@ -463,11 +470,19 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 }
 
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
-	switch entry.Status {
-	case "": // not in state yet
+	switch {
+	case entry.Status == "": // not in state yet
 		entry.Status = state.StatusMissed
 		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt)
-	case state.StatusUncertain:
+	case entry.PostURL != "":
+		entry.Status = state.StatusFailedTerminal
+		previousError := entry.LastError
+		entry.LastError = "the post is on X, but its link reply may be missing; check it and add the article link manually"
+		if previousError != "" {
+			entry.LastError += ": " + previousError
+		}
+		slog.Error("retry window expired before the link reply was confirmed; the article link must be added manually", "title", entry.Title, "post", entry.PostURL, "attempts", entry.Attempts, "last_error", entry.LastError)
+	case entry.Status == state.StatusUncertain:
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
 		entry.LastError = "retry window expired while the outcome was uncertain; the post may already be on X and must be checked manually"
@@ -482,15 +497,35 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	return a.record(guid, entry)
 }
 
-// publish records post failures, including in-flight cancellation, as workflow state.
+// publish posts the article, then its link reply when the post leaves the link out.
+// It returns the post that carries the link once the article is complete on X.
+func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) (*poster.Post, error) {
+	if entry.PostURL == "" {
+		if err := a.publishPost(ctx, item, entry); err != nil || entry.PostURL == "" {
+			return nil, err
+		}
+		if entry.Status == state.StatusPosted {
+			return &poster.Post{URL: entry.PostURL, URLs: []string{item.Link}}, nil
+		}
+	}
+	return a.publishReply(ctx, item, entry)
+}
+
+// publishPost records post failures, including in-flight cancellation, as workflow state.
+// A confirmed post that awaits its link reply keeps a pending status with its URL.
 // Preparation and state-save errors stop the poll.
-func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) (string, error) {
+func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Entry) error {
 	log := slog.With("title", item.Title, "link", item.Link)
-	text := postText(item)
 	for {
 		img, video, err := a.prepareMedia(ctx, item, entry)
 		if err != nil {
-			return "", err
+			return err
+		}
+		// Text-only posts keep the link: its preview card is their only image.
+		withReply := a.cfg.LinkInReply && entry.Format != state.FormatText
+		text := postText(item)
+		if withReply {
+			text = headline(item)
 		}
 		// Release the potentially large file before any image/text fallback.
 		closeVideo := func() {
@@ -502,28 +537,29 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 		}
 		if err := ctx.Err(); err != nil {
 			closeVideo()
-			return "", err
+			return err
 		}
 		if a.cfg.DryRun {
+			var reply string
+			if withReply {
+				reply = a.replyText(item)
+			}
 			// Caption checks need the API key held only by the poster.
-			log.Info("dry run: predicted post; captions, upload and browser outcome unverified", "text", text, "format", entry.Format, "fallback_reason", entry.FallbackReason)
+			log.Info("dry run: predicted post; captions, upload and browser outcome unverified", "text", text, "reply", reply, "format", entry.Format, "fallback_reason", entry.FallbackReason)
 			closeVideo()
 			entry.Status = state.StatusPosted // in-memory preview only
-			return "", a.record(item.GUID, entry)
+			return a.record(item.GUID, entry)
 		}
 
-		entry.Status = state.StatusPosting
-		entry.Attempts++
-		entry.NextAttemptAt = time.Time{}
-		if err := a.record(item.GUID, entry); err != nil {
+		if err := a.beginAttempt(item.GUID, entry); err != nil {
 			closeVideo()
-			return "", fmt.Errorf("save write-ahead state: %w", err)
+			return err
 		}
 		var result poster.Result
 		var postErr error
 		if err := ctx.Err(); err != nil {
 			closeVideo()
-			return "", err
+			return err
 		}
 		if video != nil {
 			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == state.FormatVideoCaptions)
@@ -540,28 +576,75 @@ func (a *app) publish(ctx context.Context, item *feed.Item, entry *state.Entry) 
 		}
 		if postErr == nil {
 			entry.Status, entry.PostURL, entry.LastError = state.StatusPosted, result.URL, ""
-			log.Info("posted", "post", result.URL, "format", entry.Format, "captions", result.Captions, "fallback_reason", entry.FallbackReason)
-			return result.URL, a.record(item.GUID, entry)
+			if withReply {
+				// Saved before the reply, so a retry never posts the article twice.
+				entry.Status = state.StatusRetry
+			}
+			log.Info("posted", "post", result.URL, "format", entry.Format, "captions", result.Captions, "fallback_reason", entry.FallbackReason, "link_reply", withReply)
+			return a.record(item.GUID, entry)
 		}
 		entry.LastError = postErr.Error()
-		pe, known := errors.AsType[*poster.PostError](postErr)
+		pe, _ := errors.AsType[*poster.PostError](postErr)
 		if next := fallbackFormat(entry.Format, pe); next != "" {
 			if err := a.advanceFormat(ctx, item.GUID, entry, next, entry.LastError); err != nil {
-				return "", err
+				return err
 			}
 			continue
 		}
-		entry.Status = state.StatusRetry
-		delay := retryDelay(entry.Attempts)
-		// Only confirmed pre-click failures avoid the uncertain-outcome delay.
-		if !known || pe.Clicked {
-			entry.Status = state.StatusUncertain
-			delay = max(delay, uncertainMinimum)
-		}
-		entry.NextAttemptAt = a.now().Add(delay)
+		a.scheduleRetry(entry, postErr)
 		log.Warn("post failed; will reconcile before retrying", "status", entry.Status, "attempts", entry.Attempts, "next_attempt_at", entry.NextAttemptAt, "error", postErr)
-		return "", a.record(item.GUID, entry)
+		return a.record(item.GUID, entry)
 	}
+}
+
+// publishReply adds the article link under the confirmed post at entry.PostURL.
+func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.Entry) (*poster.Post, error) {
+	log := slog.With("title", item.Title, "link", item.Link, "post", entry.PostURL)
+	text := a.replyText(item)
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if a.cfg.DryRun {
+		log.Info("dry run: predicted link reply; browser outcome unverified", "text", text)
+		entry.Status = state.StatusPosted // in-memory preview only
+		return nil, a.record(item.GUID, entry)
+	}
+
+	if err := a.beginAttempt(item.GUID, entry); err != nil {
+		return nil, err
+	}
+	url, err := a.poster.Reply(ctx, entry.PostURL, text)
+	if err == nil {
+		entry.Status, entry.ReplyURL, entry.LastError = state.StatusPosted, url, ""
+		log.Info("link reply posted", "reply", url)
+		return &poster.Post{URL: url, URLs: []string{item.Link}, ReplyTo: entry.PostURL}, a.record(item.GUID, entry)
+	}
+	entry.LastError = "link reply: " + err.Error()
+	a.scheduleRetry(entry, err)
+	log.Warn("link reply failed; will reconcile before retrying", "status", entry.Status, "attempts", entry.Attempts, "next_attempt_at", entry.NextAttemptAt, "error", err)
+	return nil, a.record(item.GUID, entry)
+}
+
+// beginAttempt saves the attempt before the poster call, so a crash leaves it uncertain rather than unrecorded.
+func (a *app) beginAttempt(guid string, entry *state.Entry) error {
+	entry.Status = state.StatusPosting
+	entry.Attempts++
+	entry.NextAttemptAt = time.Time{}
+	if err := a.record(guid, entry); err != nil {
+		return fmt.Errorf("save write-ahead state: %w", err)
+	}
+	return nil
+}
+
+// scheduleRetry delays the next attempt; only confirmed pre-click failures avoid the uncertain-outcome delay.
+func (a *app) scheduleRetry(entry *state.Entry, err error) {
+	entry.Status = state.StatusRetry
+	delay := retryDelay(entry.Attempts)
+	if pe, known := errors.AsType[*poster.PostError](err); !known || pe.Clicked {
+		entry.Status = state.StatusUncertain
+		delay = max(delay, uncertainMinimum)
+	}
+	entry.NextAttemptAt = a.now().Add(delay)
 }
 
 // Download failures and matching pre-click upload failures share this downgrade path.
@@ -702,7 +785,11 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 }
 
 func articleDetails(guid string, entry *state.Entry) string {
-	return fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s", guid, entry.Title, entry.Link)
+	details := fmt.Sprintf("GUID: %s\nTitle: %s\nLink: %s", guid, entry.Title, entry.Link)
+	if entry.PostURL != "" {
+		details += "\nPost: " + entry.PostURL
+	}
+	return details
 }
 
 func (a *app) monitorOperationalAlerts(ctx context.Context) {
@@ -797,10 +884,19 @@ func (a *app) save() error {
 	return nil
 }
 
-func postText(item *feed.Item) string {
+// headline is the post text when the link follows in a reply.
+func headline(item *feed.Item) string {
 	title := item.Title
 	if runes := []rune(title); len(runes) > maxTitleRunes {
 		title = string(runes[:maxTitleRunes-1]) + "…"
 	}
-	return title + " " + item.Link
+	return title
+}
+
+func postText(item *feed.Item) string {
+	return headline(item) + " " + item.Link
+}
+
+func (a *app) replyText(item *feed.Item) string {
+	return a.cfg.ReplyText + " " + item.Link
 }

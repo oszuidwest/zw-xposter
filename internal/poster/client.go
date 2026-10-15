@@ -82,12 +82,26 @@ func (e *PostError) Error() string {
 
 // Post publishes text with an optional image and returns the post URL.
 func (c *Client) Post(ctx context.Context, text string, img *article.Image) (string, error) {
-	body, err := json.Marshal(request{Text: text, Image: img})
+	return c.postJSON(ctx, "/post", request{Text: text, Image: img})
+}
+
+type replyRequest struct {
+	Text      string `json:"text"`
+	InReplyTo string `json:"inReplyTo"`
+}
+
+// Reply publishes text as a reply to the account's own post at inReplyTo and returns the reply URL.
+func (c *Client) Reply(ctx context.Context, inReplyTo, text string) (string, error) {
+	return c.postJSON(ctx, "/reply", replyRequest{Text: text, InReplyTo: inReplyTo})
+}
+
+func (c *Client) postJSON(ctx context.Context, path string, payload any) (string, error) {
+	body, err := json.Marshal(payload)
 	if err != nil {
 		return "", err
 	}
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/post", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+path, bytes.NewReader(body))
 	if err != nil {
 		return "", err
 	}
@@ -151,11 +165,13 @@ func (c *Client) sendPost(req *http.Request, client *http.Client) (Result, error
 }
 
 // Post is a published post on the account.
+// ReplyTo is the parent's URL for replies to the account's own posts; replies to others are omitted.
 type Post struct {
-	ID   string   `json:"id"`
-	URL  string   `json:"url"`
-	Text string   `json:"text"`
-	URLs []string `json:"urls"`
+	ID      string   `json:"id"`
+	URL     string   `json:"url"`
+	Text    string   `json:"text"`
+	URLs    []string `json:"urls"`
+	ReplyTo string   `json:"replyTo,omitempty"`
 }
 
 // Recent returns own posts from lookback rounded up to whole hours, newest first.

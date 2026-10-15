@@ -10,7 +10,14 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 )
+
+// defaultReplyText precedes the article link in the reply.
+const defaultReplyText = "👉 Lees het hele verhaal:"
+
+// maxReplyTextRunes leaves room for the link, which X counts as 23 characters.
+const maxReplyTextRunes = 200
 
 // Config holds the orchestrator settings.
 type Config struct {
@@ -26,7 +33,10 @@ type Config struct {
 	PollStaleAfter      time.Duration
 	AlertReminder       time.Duration
 	DryRun              bool
-	Graph               GraphConfig
+	// LinkInReply posts headline and media first, with the article link in a reply.
+	LinkInReply bool
+	ReplyText   string
+	Graph       GraphConfig
 }
 
 // GraphConfig holds optional Microsoft Graph mail settings.
@@ -52,6 +62,7 @@ func Load() (*Config, error) {
 		PosterURL:    cmp.Or(os.Getenv("POSTER_URL"), "http://127.0.0.1:8081"),
 		StateFile:    cmp.Or(os.Getenv("STATE_FILE"), "/data/state.json"),
 		HeartbeatURL: os.Getenv("HEARTBEAT_URL"),
+		ReplyText:    cmp.Or(strings.TrimSpace(os.Getenv("REPLY_TEXT")), defaultReplyText),
 		Graph: GraphConfig{
 			TenantID:     os.Getenv("GRAPH_TENANT_ID"),
 			ClientID:     os.Getenv("GRAPH_CLIENT_ID"),
@@ -83,6 +94,9 @@ func Load() (*Config, error) {
 	if cfg.DryRun, err = parse("DRY_RUN", false, strconv.ParseBool); err != nil {
 		return nil, err
 	}
+	if cfg.LinkInReply, err = parse("LINK_IN_REPLY", true, strconv.ParseBool); err != nil {
+		return nil, err
+	}
 
 	if cfg.PollInterval < 30*time.Second {
 		return nil, fmt.Errorf("POLL_INTERVAL must be at least 30s, got %s", cfg.PollInterval)
@@ -103,6 +117,9 @@ func Load() (*Config, error) {
 	}
 	if cfg.AlertReminder <= 0 {
 		return nil, errors.New("ALERT_REMINDER_INTERVAL must be greater than zero")
+	}
+	if n := utf8.RuneCountInString(cfg.ReplyText); n > maxReplyTextRunes {
+		return nil, fmt.Errorf("REPLY_TEXT must be at most %d characters, got %d", maxReplyTextRunes, n)
 	}
 	if cfg.Graph.Complete() {
 		if err := validateAddress("GRAPH_FROM_ADDRESS", cfg.Graph.FromAddress); err != nil {

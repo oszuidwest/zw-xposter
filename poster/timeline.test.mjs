@@ -5,12 +5,12 @@ import test from 'node:test';
 import {
   createTimelineCollector,
   isFirstUserTweetsPage,
-  isUserTimelineResponse,
   parseCreateTweetResponse,
   parseUserTweetsPayload,
   postErrorResponse,
+  profileTab,
 } from './timeline.mjs';
-import { account, timeline, pinnedPage, modulePage, nestedPage, notePage, unreadablePage } from './timeline-fixtures.mjs';
+import { account, timeline, pinnedPage, modulePage, nestedPage, notePage, replyPage, unreadablePage } from './timeline-fixtures.mjs';
 
 const cutoff = Date.parse('2026-10-02T12:00:00.000Z');
 
@@ -54,8 +54,10 @@ for (const [name, page, complete, ids, urls] of [
     () => timeline({ type: 'TimelineTerminateTimeline', direction: 'Bottom' }), true, []],
   ['a page without a cursor or terminate instruction is incomplete',
     () => fixture('user-tweets-no-cursor.json'), false],
-  ['conversation modules are searchable but never establish the cutoff boundary',
+  ['a conversation module with a recent post does not establish the cutoff boundary',
     modulePage, false, ['900000000000000701']],
+  ['a conversation module whose newest post is old establishes the cutoff boundary',
+    () => modulePage(true), true, []],
 ]) {
   test(name, async () => {
     const result = (await collectFirstPage(page())).result();
@@ -70,6 +72,12 @@ function firstEntryResult(body) {
   const [instruction] = body.data.user.result.timeline_v2.timeline.instructions;
   const content = instruction.entry?.content || instruction.entries[0].content;
   return content.itemContent.tweet_results.result;
+}
+
+// The post at index in the first entry, a conversation module.
+function moduleResult(body, index) {
+  const [instruction] = body.data.user.result.timeline_v2.timeline.instructions;
+  return instruction.entries[0].content.items[index].item.itemContent.tweet_results.result;
 }
 
 function removeAuthor(post) {
@@ -178,8 +186,7 @@ test('pinned and module posts without a readable author make the result incomple
   assertUnreadable(await withFirstPost(pinnedPage(true), removeAuthor), /without a readable author/);
 
   const module = modulePage();
-  const [instruction] = module.data.user.result.timeline_v2.timeline.instructions;
-  removeAuthor(instruction.entries[0].content.items[0].item.itemContent.tweet_results.result);
+  removeAuthor(moduleResult(module, 0));
   assertUnreadable(module, /without a readable author/);
 });
 
@@ -308,13 +315,38 @@ test('malformed variable shapes cannot establish the first timeline page', () =>
   }
 });
 
-test('recognizes both operation names for the own profile timeline', () => {
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweets?variables=%7B%7D'), true);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserOriginalsTimeline?variables=%7B%7D'), true);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweetsAndReplies'), false);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/HomeTimeline'), false);
-  assert.equal(isUserTimelineResponse('not a url'), false);
+test('maps profile timeline operations to the Posts and Replies tabs', () => {
+  for (const [operation, tab] of [
+    ['UserTweets', 'posts'], ['UserOriginalsTimeline', 'posts'],
+    ['UserTweetsAndReplies', 'replies'], ['UserRepliesTimeline', 'replies'], ['HomeTimeline', ''],
+  ]) {
+    assert.equal(profileTab(`https://x.com/i/api/graphql/abc/${operation}?variables=%7B%7D`), tab, operation);
+  }
+  assert.equal(profileTab('not a url'), '');
 });
+
+test('reads link replies from a Replies tab that lists only conversations', async () => {
+  const timeline = await collectFirstPage(fixture('user-replies-timeline.json'));
+
+  assert.deepEqual(timeline.result().posts.map((post) => [post.id, post.urls, post.replyTo]), [
+    ['900000000000001003', [], 'https://x.com/fixture_account/status/900000000000001002'],
+    ['900000000000001002', ['https://example.invalid/articles/replied'], 'https://x.com/fixture_account/status/900000000000001001'],
+    ['900000000000001001', [], undefined],
+  ]);
+  assert.equal(timeline.complete(), true);
+});
+
+for (const [name, text, entities] of [
+  ['a media post', 'Headline https://t.co/photo', { media: [{ url: 'https://t.co/photo' }] }],
+  ['a text post', 'Headline', {}],
+]) {
+  test(`${name} without a urls list has no links`, async () => {
+    const body = await withFirstPost(fixture('user-tweets-page-1.json'), (post) => {
+      Object.assign(post.legacy, { full_text: text, entities });
+    });
+    assert.deepEqual(parseUserTweetsPayload(body, account).posts[0].urls, []);
+  });
+}
 
 test('reports why a timeline is incomplete', async () => {
   const continuation = createTimelineCollector({ ...account, cutoff });
@@ -397,4 +429,60 @@ test('serializes post errors with click state, stage and caption outcome', async
   assert.deepEqual(postErrorResponse(before), await fixture('post-error-before-click.json'));
   assert.deepEqual(postErrorResponse(after), await fixture('post-error-after-click.json'));
   assert.deepEqual(postErrorResponse(video), await fixture('post-error-video-stage.json'));
+});
+
+test('self-replies keep their parent and replies to others are skipped', () => {
+  const { posts, oldestEntry } = parseUserTweetsPayload(replyPage(), account);
+
+  assert.deepEqual(posts.map((post) => [post.id, post.replyTo]), [
+    ['900000000000000901', undefined],
+    ['900000000000000902', 'https://x.com/fixture_account/status/900000000000000901'],
+  ]);
+  assert.equal(posts[1].urls[0], 'https://example.invalid/articles/reply');
+  // The skipped reply to another account still marks how far the timeline has been read.
+  assert.equal(oldestEntry, Date.parse('2026-10-02T11:00:00.000Z'));
+});
+
+for (const [name, change] of [
+  ['no parent author', (legacy) => {
+    delete legacy.in_reply_to_user_id_str;
+    delete legacy.in_reply_to_screen_name;
+  }],
+  ['a malformed parent ID', (legacy) => {
+    legacy.in_reply_to_status_id_str = 'x';
+  }],
+]) {
+  test(`a reply with ${name} makes the result incomplete`, () => {
+    const body = replyPage();
+    change(moduleResult(body, 1).legacy);
+    assertUnreadable(body);
+  });
+}
+
+test('a reply is recognized as a self-reply by the parent handle alone', () => {
+  const body = replyPage();
+  const { legacy } = moduleResult(body, 1);
+  delete legacy.in_reply_to_user_id_str;
+  legacy.in_reply_to_screen_name = 'Fixture_Account';
+  const { posts } = parseUserTweetsPayload(body, { ...account, ownId: '' });
+  assert.equal(posts[1].replyTo, 'https://x.com/Fixture_Account/status/900000000000000901');
+});
+
+test('a reply must be published under the requested post', () => {
+  const body = (parent) => ({ data: { create_tweet: { tweet_results: { result: {
+    rest_id: '900000000000000602',
+    core: { user_results: { result: { core: { screen_name: 'fixture_account' } } } },
+    legacy: parent === undefined ? {} : { in_reply_to_status_id_str: parent },
+  } } } } });
+
+  assert.equal(parseCreateTweetResponse(body('900000000000000601'), 'fixture_account', { inReplyTo: '900000000000000601' }).id, '900000000000000602');
+  assert.throws(() => parseCreateTweetResponse(body('1'), 'fixture_account', { inReplyTo: '900000000000000601' }), /under post 1 instead/);
+  assert.throws(() => parseCreateTweetResponse(body(), 'fixture_account', { inReplyTo: '900000000000000601' }), /under no post instead/);
+
+  const withoutLegacy = body('900000000000000601');
+  delete withoutLegacy.data.create_tweet.tweet_results.result.legacy;
+  assert.throws(
+    () => parseCreateTweetResponse(withoutLegacy, 'fixture_account', { inReplyTo: '900000000000000601' }),
+    /under no post instead/,
+  );
 });

@@ -3,6 +3,7 @@
 <title>Offline poster fixture</title>
 <button data-testid="SideNav_AccountSwitcher_Button">Account</button>
 <a data-testid="AppTabBar_Profile_Link" href="/fixture_account">Profile</a>
+<a role="tab" href="/fixture_account/with_replies">Antwoorden</a>
 <button data-testid="SideNav_NewTweet_Button" onclick="document.querySelector('[role=dialog]').hidden=false">Compose</button>
 <section role="dialog" aria-modal="true" hidden>
   <div data-testid="tweetTextarea_0" contenteditable="true" style="width:400px;height:80px;border:1px solid"></div>
@@ -17,9 +18,18 @@
   <button id="caption-done">Gereed</button>
 </section>
 <article>Offline timeline</article>
+<article data-testid="tweet">
+  <a href="/fixture_account/status/900000000000000601"><time>1m</time></a>
+  <button data-testid="reply">Beantwoorden</button>
+</article>
 <script>
   let noticeShown = false;
   let captionFile;
+  let replyTo;
+  document.querySelector('[data-testid=reply]').onclick = () => {
+    replyTo = '900000000000000601';
+    document.querySelector('[role=dialog]').hidden = false;
+  };
   document.querySelector('[data-testid=fileInput]').onchange = async (event) => {
     const file = event.target.files[0];
     const preview = document.createElement(file.type === 'video/mp4' ? 'video' : 'img');
@@ -77,15 +87,23 @@
     }
     await fetch('/i/api/graphql/offline/CreateTweet', {
       method: 'POST',
-      body: JSON.stringify({ text: document.querySelector('[contenteditable]').textContent }),
+      body: JSON.stringify({
+        text: document.querySelector('[contenteditable]').textContent,
+        ...(replyTo && { reply: { in_reply_to_tweet_id: replyTo } }),
+      }),
     });
     document.querySelector('[role=dialog]').remove();
   };
-  if (location.pathname === '/fixture_account') {
+  // Like X, the Posts tab lists headline posts and the Replies tab only replies.
+  const profileTimeline = {
+    '/fixture_account': 'UserOriginalsTimeline',
+    '/fixture_account/with_replies': 'UserRepliesTimeline',
+  }[location.pathname];
+  if (profileTimeline) {
     (async () => {
-      const response = await fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%7D');
+      const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
       if (response.headers.get('x-offline-next')) {
-        await fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%22cursor%22%3A%22next%22%7D');
+        await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
       }
     })();
   }

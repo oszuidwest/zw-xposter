@@ -41,6 +41,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   const pageHTML = await fixture('browser-page.html');
   let rejectPost;
   let failPagination;
+  let profilePages;
   let failVideo;
   let uploadStatus;
   let failCaptions;
@@ -49,6 +50,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let captionCategory;
   let failImage;
   let failRecovery;
+  let misdirectReply;
   let loggedOut;
   let videoStatusRequested;
   let videoProcessing;
@@ -66,7 +68,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   t.beforeEach(() => {
     failTranscription = false;
     rejectPost = false;
-    failPagination = false;
+    failPagination = '';
+    profilePages = undefined;
     failVideo = false;
     uploadStatus = 200;
     failCaptions = false;
@@ -75,6 +78,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     captionCategory = undefined;
     failImage = false;
     failRecovery = false;
+    misdirectReply = false;
     loggedOut = false;
     process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
     videoStatusRequested = Promise.withResolvers();
@@ -136,7 +140,15 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     if (url.pathname.endsWith('/CreateTweet')) {
       const page = context.pages()[0];
-      const text = request.postDataJSON().text;
+      const { text, reply } = request.postDataJSON();
+      if (reply) {
+        published.push(text);
+        return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: { create_tweet: { tweet_results: { result: {
+          rest_id: '900000000000000602',
+          core: { user_results: { result: { core: { screen_name: 'fixture_account' } } } },
+          legacy: { in_reply_to_status_id_str: misdirectReply ? '900000000000000001' : reply.in_reply_to_tweet_id },
+        } } } } }) });
+      }
       if (text === 'Caption recovery') {
         assert.equal(await page.locator('[data-testid=attachments] video').count(), 1);
         assert.equal(await page.getByText('Transcripties', { exact: true }).count(), 0);
@@ -148,18 +160,20 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         body: await fixture(rejectPost ? 'create-tweet-without-id.json' : 'create-tweet-with-id.json'),
       });
     }
-    if (url.pathname.endsWith('/UserOriginalsTimeline')) {
+    const tab = { UserOriginalsTimeline: 'posts', UserRepliesTimeline: 'replies' }[url.pathname.split('/').pop()];
+    if (tab) {
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
-      if (failPagination && continuation) {
+      if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
       }
+      const firstPage = !continuation && profilePages?.[tab];
       return route.fulfill({
         contentType: 'application/json',
-        headers: failPagination ? { 'x-offline-next': 'true' } : {},
-        body: await fixture(failPagination ? 'user-tweets-page-1.json' : 'user-tweets-end.json'),
+        headers: firstPage ? { 'x-offline-next': 'true' } : {},
+        body: firstPage || await fixture('user-tweets-end.json'),
       });
     }
-    if (['/home', '/fixture_account'].includes(url.pathname)) {
+    if (['/home', '/fixture_account', '/fixture_account/with_replies'].includes(url.pathname) || /^\/fixture_account\/status\/\d+$/.test(url.pathname)) {
       let body = pageHTML;
       body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
@@ -178,6 +192,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text, image }), signal,
   });
   const image = { mime: 'image/png', data: 'aW1hZ2U=' };
+  const reply = (body) => fetch(`${base}/reply`, {
+    method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
+  });
+  const parent = 'https://x.com/fixture_account/status/900000000000000601';
   const postVideo = (text, bytes, signal, skipCaptions = false) => fetch(`${base}/post-video`, {
     method: 'POST',
     headers: { 'content-type': 'video/mp4', 'x-post-text': Buffer.from(text).toString('base64'), ...(skipCaptions && { 'x-post-captions': 'none' }) },
@@ -191,6 +209,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal((await post(' ')).status, 400);
     assert.equal((await fetch(`${base}/post-video`, { method: 'POST' })).status, 400);
     assert.equal((await postVideo(' ', Buffer.from('video'))).status, 400);
+    for (const body of [{ text: ' ', inReplyTo: parent }, { text: 'Link' }, { text: 'Link', inReplyTo: 'https://x.com/other_account/status/1' }, { text: 'Link', inReplyTo: `${parent}/photo/1` }]) {
+      assert.equal((await reply(body)).status, 400);
+    }
     const localPath = await fetch(`${base}/post`, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text: 'invalid', videoFile: '/etc/passwd' }),
@@ -234,6 +255,40 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const recent = await fetch(`${base}/recent?hours=1`);
     assert.equal(recent.status, 200);
     assert.deepEqual(published, before);
+  });
+
+  await t.test('combines headline posts from the Posts tab with link replies from the Replies tab', async () => {
+    const [weekday, day, month, year, time] = new Date(Date.now() - 60_000).toUTCString().replace(',', '').split(' ');
+    const recent = async (name) => (await fixture(name))
+      .replaceAll(/"created_at": "[^"]+"/g, `"created_at": "${weekday} ${month} ${day} ${time} +0000 ${year}"`);
+    profilePages = { posts: await recent('user-originals-timeline.json'), replies: await recent('user-replies-timeline.json') };
+    const response = await fetch(`${base}/recent?hours=1`);
+    assert.equal(response.status, 200);
+    const { posts, complete } = await response.json();
+    assert.equal(complete, true);
+    const status = (id) => `https://x.com/fixture_account/status/${id}`;
+    assert.deepEqual(posts.map((post) => [post.id, post.urls, post.replyTo]).sort(), [
+      ['900000000000001001', [], undefined],
+      ['900000000000001002', ['https://example.invalid/articles/replied'], status('900000000000001001')],
+      ['900000000000001003', [], status('900000000000001002')],
+      ['900000000000001005', ['https://example.invalid/articles/fallback'], undefined],
+    ]);
+  });
+
+  await t.test('replies to an own post with the article link', async () => {
+    const response = await reply({ text: '👉 Lees het hele verhaal: https://example.invalid/a', inReplyTo: parent.replace('fixture_account', 'Fixture_Account') });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).url, 'https://x.com/fixture_account/status/900000000000000602');
+    assert.equal(published.at(-1), '👉 Lees het hele verhaal: https://example.invalid/a');
+  });
+
+  await t.test('a reply that X places under another post is reported as uncertain', async () => {
+    misdirectReply = true;
+    const response = await reply({ text: 'Misplaced', inReplyTo: parent });
+    const result = await response.json();
+    assert.equal(response.status, 500);
+    assert.equal(result.clicked, true);
+    assert.match(result.error, /under post 900000000000000001 instead/);
   });
 
   await t.test('a rejection after the actual click is reported as uncertain', async () => {
@@ -406,12 +461,15 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(published.length, before);
   });
 
-  await t.test('an HTTP failure in pagination refuses the whole recent result', async () => {
-    failPagination = true;
-    const response = await fetch(`${base}/recent?hours=48`);
-    assert.equal(response.status, 500);
-    assert.match((await response.json()).error, /UserTweets returned HTTP 429/);
-  });
+  for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
+    await t.test(`an HTTP failure in ${name} tab pagination refuses the whole recent result`, async () => {
+      failPagination = tab;
+      profilePages = { [tab]: await fixture('user-tweets-page-1.json') };
+      const response = await fetch(`${base}/recent?hours=48`);
+      assert.equal(response.status, 500);
+      assert.match((await response.json()).error, new RegExp(`${name} tab: UserTweets returned HTTP 429`));
+    });
+  }
   assert.deepEqual(unexpected, [], 'all browser requests must use the offline fixture');
   assert.deepEqual((await readdir(process.env.DATA_DIR)).filter((name) => name.startsWith('xposter-upload-')), [], 'received videos are released after success, failure and cancellation');
 });

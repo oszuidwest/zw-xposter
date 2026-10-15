@@ -34,7 +34,8 @@ type Entry struct {
 	Title             string    `json:"title"`
 	Link              string    `json:"link"`
 	Status            string    `json:"status"`
-	PostURL           string    `json:"post_url,omitempty"`
+	PostURL           string    `json:"post_url,omitempty"`   // set once confirmed, also while its link reply is pending
+	ReplyURL          string    `json:"reply_url,omitempty"`  // the reply that carries the article link
 	FoundOnX          bool      `json:"found_on_x,omitempty"` // includes our own earlier attempts
 	Attempts          int       `json:"attempts,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`

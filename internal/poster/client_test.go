@@ -1,6 +1,7 @@
 package poster
 
 import (
+	"encoding/json"
 	"errors"
 	"net/http"
 	"os"
@@ -170,5 +171,40 @@ func TestClientPostRequiresConfirmation(t *testing.T) {
 				t.Fatal("missing confirmation must not be classified as a safe pre-click error")
 			}
 		})
+	}
+}
+
+func TestClientReply(t *testing.T) {
+	t.Parallel()
+
+	const (
+		parent = "https://x.com/fixture_account/status/900000000000000601"
+		reply  = "https://x.com/fixture_account/status/900000000000000602"
+		text   = "👉 Lees het hele verhaal: https://example.invalid/article"
+	)
+	server := testutil.Server(t, func(w http.ResponseWriter, r *http.Request) {
+		testutil.Equal(t, r.URL.Path, "/reply")
+		var body map[string]string
+		testutil.NoError(t, json.NewDecoder(r.Body).Decode(&body))
+		testutil.Equal(t, body["inReplyTo"], parent)
+		testutil.Equal(t, body["text"], text)
+		testutil.JSON(t, w, http.StatusOK, map[string]any{"url": reply})
+	})
+
+	url, err := New(server.URL).Reply(t.Context(), parent, text)
+	testutil.NoError(t, err)
+	testutil.Equal(t, url, reply)
+}
+
+func TestClientReplyError(t *testing.T) {
+	t.Parallel()
+
+	server := testutil.Server(t, func(w http.ResponseWriter, _ *http.Request) {
+		testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{"error": "reply failed", "clicked": false, "stage": "service"})
+	})
+	_, err := New(server.URL).Reply(t.Context(), "https://x.com/fixture_account/status/1", "text")
+	postErr, ok := errors.AsType[*PostError](err)
+	if !ok || postErr.Clicked {
+		t.Fatalf("Reply() error = %v, want a pre-click *PostError", err)
 	}
 }

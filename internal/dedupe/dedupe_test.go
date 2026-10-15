@@ -45,3 +45,47 @@ func TestFind(t *testing.T) {
 		})
 	}
 }
+
+func TestFindHeadline(t *testing.T) {
+	const (
+		headline = "Gemeente investeert in fietspaden & bruggen"
+		mainURL  = "https://x.com/fixture_account/status/101"
+	)
+	main := poster.Post{URL: mainURL, Text: "Gemeente investeert in fietspaden &amp; bruggen https://t.co/media"}
+	tests := []struct {
+		name  string
+		posts []poster.Post
+		want  string
+	}{
+		{"headline with media link", []poster.Post{main}, mainURL},
+		{"spacing differs", []poster.Post{{URL: mainURL, Text: " Gemeente investeert in\nfietspaden & bruggen "}}, mainURL},
+		{"other headline", []poster.Post{{URL: mainURL, Text: "Gemeente investeert in fietspaden"}}, ""},
+		{"headline with more text", []poster.Post{{URL: mainURL, Text: headline + " vandaag"}}, ""},
+		{"reply with the headline", []poster.Post{{URL: mainURL, Text: headline, ReplyTo: "https://x.com/fixture_account/status/100"}}, ""},
+		{"already has a link reply", []poster.Post{main, {
+			URL: "https://x.com/fixture_account/status/102", URLs: []string{"https://example.invalid/other"},
+			ReplyTo: "https://x.com/Fixture_Account/status/101",
+		}}, ""},
+		{"reply without a link does not claim the post", []poster.Post{main, {
+			URL: "https://x.com/fixture_account/status/102", Text: "Update", ReplyTo: mainURL,
+		}}, mainURL},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ""
+			if post := FindHeadline(headline, tt.posts); post != nil {
+				got = post.URL
+			}
+			testutil.Equal(t, got, tt.want)
+		})
+	}
+	testutil.Equal(t, FindHeadline(" ", []poster.Post{{URL: mainURL}}), (*poster.Post)(nil))
+}
+
+func TestFindReturnsLinkedReply(t *testing.T) {
+	reply := poster.Post{URL: "https://x.com/fixture_account/status/102", URLs: []string{link}, ReplyTo: "https://x.com/fixture_account/status/101"}
+	got := Find(link, []poster.Post{{URL: "https://x.com/fixture_account/status/101", Text: "Headline"}, reply})
+	if got == nil || got.ReplyTo != reply.ReplyTo {
+		t.Fatalf("Find() = %#v, want the reply with its parent", got)
+	}
+}
