@@ -63,7 +63,10 @@ function replyParent(legacy, ownId, username, handle) {
   const own = (ownId && parentUser === ownId)
     || (typeof parentHandle === 'string' && parentHandle.toLowerCase() === username.toLowerCase());
   const foreign = (ownId && parentUser && parentUser !== ownId) || (parentHandle && !own);
-  if (!/^\d+$/.test(parentId) || (!own && !foreign)) return { unreadable: true };
+  // A malformed parent ID or handle must not decide authorship either way.
+  const malformed = (parentUser != null && !(typeof parentUser === 'string' && /^\d+$/.test(parentUser)))
+    || (parentHandle != null && typeof parentHandle !== 'string');
+  if (!/^\d+$/.test(parentId) || malformed || (!own && !foreign)) return { unreadable: true };
   if (!own) return { foreign: true };
   return { replyTo: `https://x.com/${parentHandle || handle || username}/status/${parentId}` };
 }

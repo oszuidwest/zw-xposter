@@ -412,7 +412,12 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		workflow.recentLoaded = true
 		a.status.RecordXCheck(a.now())
 	}
-	if existing := dedupe.Find(item.Link, workflow.recent); existing != nil {
+	candidates := workflow.recent
+	if entry.PostURL != "" {
+		// Only a link reply under this article's own post completes it.
+		candidates = dedupe.RepliesTo(entry.PostURL, workflow.recent)
+	}
+	if existing := dedupe.Find(item.Link, candidates); existing != nil {
 		slog.Info("already on X, not posting", "title", item.Title, "post", existing.URL)
 		entry.Status = state.StatusPosted
 		entry.PostURL = existing.URL
@@ -426,6 +431,11 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	// An uncertain publication must be reconciled by its article link, never by headline alone.
 	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
 		return a.record(item.GUID, &entry)
+	}
+	// Another feed entry for this article has its post on X and still retries the link reply.
+	if guid := a.pendingPost(item, &entry); guid != "" {
+		slog.Info("another feed entry for this article still owes its link reply; waiting", "title", item.Title, "guid", guid)
+		return nil
 	}
 
 	if workflow.attempted && !a.cfg.DryRun {
@@ -444,6 +454,23 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	workflow.attempted = true
 	return nil
+}
+
+// pendingPost returns another unfinished entry for the same article whose post awaits its link reply.
+// Waiting saves nothing: that entry either adds the reply, which the next X check finds, or
+// expires with an alert, after which entry publishes normally. Only an entry without a post
+// waits, and only for one with a post, so entries never wait on each other.
+func (a *app) pendingPost(item *feed.Item, entry *state.Entry) string {
+	if entry.PostURL != "" {
+		return ""
+	}
+	for guid := range a.store.Items {
+		other := a.store.Items[guid]
+		if guid != item.GUID && other.PostURL != "" && !a.store.Done(guid) && dedupe.SameLink(item.Link, other.Link) {
+			return guid
+		}
+	}
+	return ""
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -611,6 +638,9 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 	}
 
 	if err := a.beginAttempt(item.GUID, entry); err != nil {
+		return nil, err
+	}
+	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
 	url, err := a.poster.Reply(ctx, entry.PostURL, text)
