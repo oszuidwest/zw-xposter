@@ -25,9 +25,9 @@ import {
 import {
   createTimelineCollector,
   isFirstUserTweetsPage,
-  isUserTimelineResponse,
   parseCreateTweetResponse,
   postErrorResponse,
+  profileTab,
 } from './timeline.mjs';
 
 const PORT = Number(process.env.PORT || 8081);
@@ -602,10 +602,15 @@ async function recentPosts(hours) {
   const ownId = decodeURIComponent(twid).replace(/^u=/, '');
   const cutoff = Date.now() - hours * 3600_000;
 
-  const timeline = createTimelineCollector({ ownId, username: USERNAME, cutoff });
+  // Headline posts and their link replies are on separate tabs; both must be complete.
+  const timelines = {
+    posts: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
+    replies: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
+  };
   const pending = [];
   const onResponse = (r) => {
-    if (!isUserTimelineResponse(r.url())) return;
+    const timeline = timelines[profileTab(r.url())];
+    if (!timeline) return;
     if (!r.ok()) {
       timeline.fail(`UserTweets returned HTTP ${r.status()}`);
       return;
@@ -613,16 +618,7 @@ async function recentPosts(hours) {
     const firstPage = isFirstUserTweetsPage(r.url());
     pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
   };
-
-  page.on('response', onResponse);
-  try {
-    await pause(1000, 2500);
-    await humanClick(page, page.locator('[data-testid="AppTabBar_Profile_Link"]'));
-    await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
-    await pause(1000, 2500);
-    // Only the Replies tab lists link replies; the Posts tab's responses are ignored.
-    await humanClick(page, page.locator('a[role="tab"][href$="/with_replies" i]'));
-    await page.waitForURL(new RegExp(`x\\.com/${USERNAME}/with_replies$`, 'i'));
+  const readTab = async (timeline) => {
     await page.locator('article').first().waitFor();
     await pause(1500, 3000);
     for (let i = 0; i < 8; i++) {
@@ -632,14 +628,30 @@ async function recentPosts(hours) {
       await pause(1500, 3000);
     }
     await Promise.all(pending);
+  };
+
+  page.on('response', onResponse);
+  try {
+    await pause(1000, 2500);
+    await humanClick(page, page.locator('[data-testid="AppTabBar_Profile_Link"]'));
+    await page.waitForURL(new RegExp(`x\\.com/${USERNAME}$`, 'i'));
+    await readTab(timelines.posts);
+    if (timelines.posts.complete()) {
+      await pause(1000, 2500);
+      await humanClick(page, page.locator('a[role="tab"][href$="/with_replies" i]'));
+      await page.waitForURL(new RegExp(`x\\.com/${USERNAME}/with_replies$`, 'i'));
+      await readTab(timelines.replies);
+    }
   } finally {
     page.off('response', onResponse);
   }
 
   // Fail the request: partial history cannot rule out an existing post.
-  const reason = timeline.incompleteReason();
+  const reason = (timelines.posts.incompleteReason() && `Posts tab: ${timelines.posts.incompleteReason()}`)
+    || (timelines.replies.incompleteReason() && `Replies tab: ${timelines.replies.incompleteReason()}`);
   if (reason) throw new Error(`recent posts incomplete: ${reason} (screenshot: ${await screenshot(page, 'recent')})`);
-  return timeline.result();
+  const posts = new Map([...timelines.posts.result().posts, ...timelines.replies.result().posts].map((post) => [post.id, post]));
+  return { posts: [...posts.values()].sort((a, b) => b.createdAt.localeCompare(a.createdAt)), complete: true };
 }
 
 function send(res, status, body) {

@@ -29,11 +29,24 @@ function tweetResult(itemContent) {
   return result;
 }
 
+// X omits empty entity lists. A missing urls list means no links only when every t.co link
+// in the text is a media link; otherwise it stays undefined and the post is unreadable.
+function legacyUrls(legacy) {
+  const entities = legacy?.entities;
+  if (entities?.urls !== undefined) return entities.urls;
+  if (typeof entities !== 'object' || entities === null || Array.isArray(entities)) return undefined;
+  const media = entities.media === undefined ? [] : entities.media;
+  if (!Array.isArray(media) || typeof legacy.full_text !== 'string') return undefined;
+  const mediaLinks = new Set(media.map((item) => item?.url));
+  const links = legacy.full_text.match(/https:\/\/t\.co\/\w+/g) || [];
+  return links.every((link) => mediaLinks.has(link)) ? [] : undefined;
+}
+
 // Unreadable link entities return null so duplicate checks fail closed.
 // Media links and absent long-post links need no expansion; legacy links do.
 function expandedUrls(legacy, note) {
   const noteUrls = note?.entity_set?.urls;
-  const lists = [legacy?.entities?.urls, noteUrls === undefined ? [] : noteUrls];
+  const lists = [legacyUrls(legacy), noteUrls === undefined ? [] : noteUrls];
   if (!lists.every(Array.isArray)) return null;
   const urls = lists.flat().map((url) => url?.expanded_url);
   if (!urls.every((url) => typeof url === 'string' && url.trim() !== '')) return null;
@@ -150,12 +163,21 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
   return { posts, oldestEntry, reachedEnd };
 }
 
-// The Replies tab lists the account's posts together with its link replies.
-export function isUserTimelineResponse(responseURL) {
+// X lists headline posts on the Posts tab and link replies on the Replies tab. The older
+// UserTweetsAndReplies also lists the posts; reading both tabs covers either layout.
+const PROFILE_TABS = new Map([
+  ['UserTweets', 'posts'],
+  ['UserOriginalsTimeline', 'posts'],
+  ['UserTweetsAndReplies', 'replies'],
+  ['UserRepliesTimeline', 'replies'],
+]);
+
+// Returns 'posts', 'replies' or '' for other responses.
+export function profileTab(responseURL) {
   try {
-    return new URL(responseURL).pathname.split('/').pop() === 'UserTweetsAndReplies';
+    return PROFILE_TABS.get(new URL(responseURL).pathname.split('/').pop()) || '';
   } catch {
-    return false;
+    return '';
   }
 }
 

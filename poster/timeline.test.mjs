@@ -5,10 +5,10 @@ import test from 'node:test';
 import {
   createTimelineCollector,
   isFirstUserTweetsPage,
-  isUserTimelineResponse,
   parseCreateTweetResponse,
   parseUserTweetsPayload,
   postErrorResponse,
+  profileTab,
 } from './timeline.mjs';
 import { account, timeline, pinnedPage, modulePage, nestedPage, notePage, replyPage, unreadablePage } from './timeline-fixtures.mjs';
 
@@ -310,13 +310,38 @@ test('malformed variable shapes cannot establish the first timeline page', () =>
   }
 });
 
-test('reads only the Replies tab, which includes the link replies', () => {
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweetsAndReplies?variables=%7B%7D'), true);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserTweets?variables=%7B%7D'), false);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/UserOriginalsTimeline?variables=%7B%7D'), false);
-  assert.equal(isUserTimelineResponse('https://x.com/i/api/graphql/abc/HomeTimeline'), false);
-  assert.equal(isUserTimelineResponse('not a url'), false);
+test('maps profile timeline operations to the Posts and Replies tabs', () => {
+  for (const [operation, tab] of [
+    ['UserTweets', 'posts'], ['UserOriginalsTimeline', 'posts'],
+    ['UserTweetsAndReplies', 'replies'], ['UserRepliesTimeline', 'replies'], ['HomeTimeline', ''],
+  ]) {
+    assert.equal(profileTab(`https://x.com/i/api/graphql/abc/${operation}?variables=%7B%7D`), tab, operation);
+  }
+  assert.equal(profileTab('not a url'), '');
 });
+
+test('reads link replies from a Replies tab that lists only conversations', async () => {
+  const timeline = await collectFirstPage(fixture('user-replies-timeline.json'));
+
+  assert.deepEqual(timeline.result().posts.map((post) => [post.id, post.urls, post.replyTo]), [
+    ['900000000000001003', [], 'https://x.com/fixture_account/status/900000000000001002'],
+    ['900000000000001002', ['https://example.invalid/articles/replied'], 'https://x.com/fixture_account/status/900000000000001001'],
+    ['900000000000001001', [], undefined],
+  ]);
+  assert.equal(timeline.complete(), true);
+});
+
+for (const [name, text, entities] of [
+  ['a media post', 'Headline https://t.co/photo', { media: [{ url: 'https://t.co/photo' }] }],
+  ['a text post', 'Headline', {}],
+]) {
+  test(`${name} without a urls list has no links`, async () => {
+    const body = await withFirstPost(fixture('user-tweets-page-1.json'), (post) => {
+      Object.assign(post.legacy, { full_text: text, entities });
+    });
+    assert.deepEqual(parseUserTweetsPayload(body, account).posts[0].urls, []);
+  });
+}
 
 test('reports why a timeline is incomplete', async () => {
   const continuation = createTimelineCollector({ ...account, cutoff });

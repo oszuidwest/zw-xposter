@@ -94,14 +94,16 @@
     });
     document.querySelector('[role=dialog]').remove();
   };
-  if (location.pathname === '/fixture_account') {
-    fetch('/i/api/graphql/offline/UserOriginalsTimeline?variables=%7B%7D');
-  }
-  if (location.pathname === '/fixture_account/with_replies') {
+  // Like X, the Posts tab lists headline posts and the Replies tab only replies.
+  const profileTimeline = {
+    '/fixture_account': 'UserOriginalsTimeline',
+    '/fixture_account/with_replies': 'UserRepliesTimeline',
+  }[location.pathname];
+  if (profileTimeline) {
     (async () => {
-      const response = await fetch('/i/api/graphql/offline/UserTweetsAndReplies?variables=%7B%7D');
+      const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
       if (response.headers.get('x-offline-next')) {
-        await fetch('/i/api/graphql/offline/UserTweetsAndReplies?variables=%7B%22cursor%22%3A%22next%22%7D');
+        await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
       }
     })();
   }
