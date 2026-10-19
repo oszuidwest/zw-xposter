@@ -590,23 +590,36 @@ func TestPollExpiredEntryPrefersSiblingWithAKnownPost(t *testing.T) {
 
 func TestPollEarlierAttemptWithLinkInPostHoldsNothingBack(t *testing.T) {
 	for _, tt := range []struct {
-		name        string
-		linkInReply bool
-		owner       state.Entry
+		name  string
+		owner state.Entry
+		posts int32
 	}{
-		{"link in the post", false, state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage}},
-		{"text post", true, state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatText}},
-		{"expired text post", true, state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, Format: state.FormatText,
-			LastError: uncertainExpired + "; the post may already be on X and must be checked manually"}},
+		// The earlier attempt carried the link, so the complete X check already shows it is not on X.
+		{"link in the post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage, LinkInPost: true}, 1},
+		{"text post saved before link_in_post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatText}, 1},
+		{"expired text post", state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, Format: state.FormatText,
+			LastError: uncertainExpired + "; the post may already be on X and must be checked manually"}, 1},
+		// A headline-only attempt still holds the article back after LINK_IN_REPLY is switched off.
+		{"headline-only attempt under another setting", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := newReplyTest(t, &pollTestOptions{})
-			fixture.app.cfg.LinkInReply = tt.linkInReply
-			// The earlier attempt carried the link, so the complete X check already shows it is not on X.
+			fixture := newPollTest(t, &pollTestOptions{content: fallbackContent})
 			addArticleEntry(fixture, "guid-0", &tt.owner)
 			assertMails(t, pollMails(t, fixture))
-			testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusPosted)
-			fixture.assertCalls(1, 1)
+			fixture.assertCalls(1, tt.posts)
 		})
+	}
+}
+
+func TestPollSavesWhereTheAttemptPutTheLink(t *testing.T) {
+	lost := func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+		testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{"error": "response lost", "clicked": true})
+	}
+	for _, linkInReply := range []bool{false, true} {
+		fixture := newPollTest(t, &pollTestOptions{content: fallbackContent, post: lost})
+		fixture.app.cfg.LinkInReply = linkInReply
+		entry := fixture.poll()
+		testutil.Equal(t, entry.Status, state.StatusUncertain)
+		testutil.Equal(t, entry.LinkInPost, !linkInReply)
 	}
 }

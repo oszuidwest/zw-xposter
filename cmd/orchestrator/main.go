@@ -462,7 +462,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 // may be on X without its link, or "". Such an entry never waits itself, so no two entries wait
 // on each other.
 func (a *app) pendingPost(guid string, entry *state.Entry) string {
-	if a.headlineWithoutLink(entry) {
+	if headlineWithoutLink(entry) {
 		return ""
 	}
 	for _, other := range a.headlineSiblings(guid, entry.Link) {
@@ -479,7 +479,7 @@ func (a *app) headlineSiblings(guid, link string) []string {
 	var siblings []string
 	for other := range a.store.Items {
 		entry := a.store.Items[other]
-		if other != guid && a.headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
+		if other != guid && headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
 			siblings = append(siblings, other)
 		}
 	}
@@ -490,22 +490,23 @@ func (a *app) headlineSiblings(guid, link string) []string {
 // headlineWithoutLink reports whether entry's headline is or may be on X without its link reply:
 // a post awaiting its reply, an uncertain headline-only attempt, or an entry that expired in
 // either state. An attempt that carried the link is found on X by it instead.
-func (a *app) headlineWithoutLink(entry *state.Entry) bool {
+func headlineWithoutLink(entry *state.Entry) bool {
 	switch entry.Status {
 	case state.StatusRetry:
 		return entry.PostURL != ""
 	case state.StatusUncertain:
-		return entry.PostURL != "" || a.linkInReply(entry)
+		return entry.PostURL != "" || headlineOnly(entry)
 	case state.StatusFailedTerminal:
-		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && a.linkInReply(entry))
+		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && headlineOnly(entry))
 	}
 	return false
 }
 
-// linkInReply reports whether entry's post leaves the article link to a reply; text-only posts
-// keep it, since its preview card is their only image.
-func (a *app) linkInReply(entry *state.Entry) bool {
-	return a.cfg.LinkInReply && entry.Format != state.FormatText
+// headlineOnly reports whether entry's last attempt left the article link to a reply, as saved
+// with it, so a later LINK_IN_REPLY change cannot hide it. Entries saved before LinkInPost count
+// as headline-only unless they are text posts, which always keep the link.
+func headlineOnly(entry *state.Entry) bool {
+	return !entry.LinkInPost && entry.Format != state.FormatText
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -616,7 +617,8 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 		if err != nil {
 			return err
 		}
-		withReply := a.linkInReply(entry)
+		// Text-only posts keep the link: its preview card is their only image.
+		withReply := a.cfg.LinkInReply && entry.Format != state.FormatText
 		text := postText(item)
 		if withReply {
 			text = headline(item)
@@ -645,6 +647,7 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 			return a.record(item.GUID, entry)
 		}
 
+		entry.LinkInPost = !withReply
 		if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
 			closeVideo()
 			return err
