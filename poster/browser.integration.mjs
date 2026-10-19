@@ -181,7 +181,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       let body = pageHTML;
       body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
-      // A disabled Post button holds the request before the click until the test cancels it.
+      // A disabled Post button keeps the request from publishing while the test asserts the cancel.
       if (holdPostButton) body = body.replace('<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
       // Like X, a logged-out page offers a login link instead of the account button.
       if (loggedOut) body = body.replace('<button data-testid="SideNav_AccountSwitcher_Button">Account</button>', '<a href="/login">Inloggen</a>');
@@ -255,8 +255,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
     await (video ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
+    // A cancel closes the server's tab; wait for it, as the disabled Post button alone keeps a missed text cancel unpublished.
+    const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
     controller.abort();
-    await aborted;
+    await Promise.all([aborted, closed]);
     captionsAccepted.resolve();
     selectionAllowed.resolve();
     // This request queues behind the abandoned post; completion proves cleanup ran.

@@ -100,7 +100,7 @@
     '/fixture_account/with_replies': 'UserRepliesTimeline',
   }[location.pathname];
   if (profileTimeline) {
-    // Without pacing, the reader would scroll past the timeline before its responses arrive;
+    // Without pacing, recentPosts can finish its scroll attempts before these responses arrive;
     // showing the posts only after them, continuation included, keeps the test deterministic.
     const articles = document.querySelectorAll('article');
     for (const article of articles) article.hidden = true;
