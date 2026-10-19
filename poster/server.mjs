@@ -88,15 +88,8 @@ function random(min, max) {
   return min + Math.random() * (max - min);
 }
 
-// Only the offline browser test shortens human pacing; an empty or unset value keeps it.
-// Number() would read whitespace as 0, so only a plain decimal is accepted.
-export function pacingScale(value) {
-  if (!value) return 1;
-  const scale = /^\d+(\.\d+)?$/.test(value) ? Number(value) : NaN;
-  if (!(scale <= 1)) throw new Error('POSTER_PACING must be a number from 0 to 1');
-  return scale;
-}
-const PACING = pacingScale(process.env.POSTER_PACING);
+// Only the offline browser test switches human pacing off; any other value keeps it.
+const PACING = process.env.POSTER_PACING === '0' ? 0 : 1;
 
 function pause(minMs, maxMs) {
   return sleep(random(minMs, maxMs) * PACING);
@@ -187,7 +180,7 @@ async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress 
   if (covering) throw new Error(`element is covered by ${covering}`);
   const from = mouse.get(page) || { x: random(100, 600), y: random(100, 500) };
   const bend = { x: random(-80, 80), y: random(-60, 60) };
-  const steps = Math.round(random(18, 35));
+  const steps = Math.max(1, Math.round(random(18, 35) * PACING));
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     // Ease in-out, plus a bend that is largest halfway.

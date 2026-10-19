@@ -100,18 +100,16 @@
     '/fixture_account/with_replies': 'UserRepliesTimeline',
   }[location.pathname];
   if (profileTimeline) {
-    // Like X, the timeline shows only after its responses, so a reader cannot finish before them.
-    const articles = [...document.querySelectorAll('article')];
+    // Without pacing, the reader would scroll past the timeline before its responses arrive;
+    // showing the posts only after them, continuation included, keeps the test deterministic.
+    const articles = document.querySelectorAll('article');
     for (const article of articles) article.hidden = true;
     (async () => {
-      try {
-        const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
-        if (response.headers.get('x-offline-next')) {
-          await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
-        }
-      } finally {
-        for (const article of articles) article.hidden = false;
+      const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
+      if (response.headers.get('x-offline-next')) {
+        await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
       }
+      for (const article of articles) article.hidden = false;
     })();
   }
 </script>

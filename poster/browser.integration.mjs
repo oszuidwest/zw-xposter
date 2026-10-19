@@ -183,7 +183,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
       // A disabled Post button holds the request before the click until the test cancels it.
       if (holdPostButton) body = body.replace('<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
-      if (loggedOut) body = body.replace('data-testid="SideNav_AccountSwitcher_Button"', 'data-testid="logged-out"');
+      // Like X, a logged-out page offers a login link instead of the account button.
+      if (loggedOut) body = body.replace('<button data-testid="SideNav_AccountSwitcher_Button">Account</button>', '<a href="/login">Inloggen</a>');
       if (failCaptionSelection) body = body.replace("document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
       return route.fulfill({ contentType: 'text/html', body });
     }
