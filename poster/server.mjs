@@ -180,7 +180,7 @@ async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress 
   if (covering) throw new Error(`element is covered by ${covering}`);
   const from = mouse.get(page) || { x: random(100, 600), y: random(100, 500) };
   const bend = { x: random(-80, 80), y: random(-60, 60) };
-  const steps = Math.max(1, Math.round(random(18, 35) * PACING));
+  const steps = PACING ? Math.round(random(18, 35)) : 1;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     // Ease in-out, plus a bend that is largest halfway.

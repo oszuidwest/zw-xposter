@@ -255,7 +255,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
     await (video ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
-    // A cancel closes the server's tab; wait for it, as the disabled Post button alone keeps a missed text cancel unpublished.
+    // A cancel closes the server's tab; the disabled Post button would otherwise hide a missed text cancel.
     const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
     controller.abort();
     await Promise.all([aborted, closed]);
