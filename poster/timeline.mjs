@@ -2,9 +2,10 @@ function errorMessages(body) {
   return body?.errors?.map((error) => error?.message).filter(Boolean).join('; ');
 }
 
+// A present handle is used as is, so a malformed one cannot hide behind the legacy fallback.
 function screenName(result) {
   const user = result?.core?.user_results?.result;
-  return user?.core?.screen_name || user?.legacy?.screen_name;
+  return user?.core?.screen_name ?? user?.legacy?.screen_name;
 }
 
 function timelineInstructions(body) {

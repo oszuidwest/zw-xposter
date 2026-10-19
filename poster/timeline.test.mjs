@@ -186,6 +186,10 @@ for (const [name, ownId, change] of [
   ['a non-string handle beside its own user ID', account.ownId, (post) => {
     post.core.user_results.result.core.screen_name = 5;
   }],
+  ['a falsy non-string handle beside a valid legacy handle', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 0;
+    post.core.user_results.result.legacy = { screen_name: 'fixture_account' };
+  }],
   ['a handle with a path beside its own user ID', account.ownId, (post) => {
     post.core.user_results.result.core.screen_name = 'fixture_account/status/1';
   }],
