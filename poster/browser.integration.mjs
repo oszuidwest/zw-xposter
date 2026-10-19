@@ -41,6 +41,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
   const pageHTML = await fixture('browser-page.html');
+  // A fixture edit must not silently disable a swap.
+  const swap = (text, from, to) => {
+    assert.ok(text.includes(from), `fixture lacks: ${from}`);
+    return text.replace(from, to);
+  };
   let rejectPost;
   let failPagination;
   let profilePages;
@@ -179,13 +184,13 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     if (['/home', '/fixture_account', '/fixture_account/with_replies'].includes(url.pathname) || /^\/fixture_account\/status\/\d+$/.test(url.pathname)) {
       let body = pageHTML;
-      body = body.replace("if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
-      if (failRecovery) body = body.replace('role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
+      body = swap(body, "if (file.type !== 'video/mp4') return;", "if (file.type !== 'video/mp4') { await fetch('/i/media/upload.json', { method: 'POST', body: file }); return; }");
+      if (failRecovery) body = swap(body, 'role="dialog" aria-modal="true" hidden', 'role="dialog" aria-modal="true"');
       // A disabled Post button keeps the request from publishing while the test asserts the cancel.
-      if (holdPostButton) body = body.replace('<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
+      if (holdPostButton) body = swap(body, '<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
       // Like X, a logged-out page offers a login link instead of the account button.
-      if (loggedOut) body = body.replace('<button data-testid="SideNav_AccountSwitcher_Button">Account</button>', '<a href="/login">Inloggen</a>');
-      if (failCaptionSelection) body = body.replace("document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
+      if (loggedOut) body = swap(body, '<button data-testid="SideNav_AccountSwitcher_Button">Account</button>', '<a href="/login">Inloggen</a>');
+      if (failCaptionSelection) body = swap(body, "document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
       return route.fulfill({ contentType: 'text/html', body });
     }
     unexpected.push(request.url());
@@ -363,8 +368,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const response = postVideo('Cancelled upload', Buffer.from('synthetic MP4'), controller.signal);
     const aborted = assert.rejects(response, { name: 'AbortError' });
     await captionsRequested.promise;
+    // Release the upload only after the cancel has closed the server's tab.
+    const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
     controller.abort();
-    await aborted;
+    await Promise.all([aborted, closed]);
     captionsAccepted.resolve();
     assert.equal((await fetch(`${base}/recent?hours=1`)).status, 200);
     assert.deepEqual(published, before);

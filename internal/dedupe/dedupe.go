@@ -8,9 +8,7 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/poster"
 )
 
-// Find returns the post that links to the article at link, or nil.
-//
-// URLs match on host and path, ignoring case, scheme, www, queries and edge slashes.
+// Find returns the post that links to the article at link, matched by SameLink, or nil.
 // Text links also match after stripping dlvr.it's zero-width spaces.
 func Find(link string, posts []poster.Post) *poster.Post {
 	for i := range posts {
@@ -36,7 +34,7 @@ func Find(link string, posts []poster.Post) *poster.Post {
 
 const zeroWidthSpace = "\u200b"
 
-// RepliesTo returns the replies to the post at parent, matched by status ID so handle case and spelling cannot matter.
+// RepliesTo returns the replies to the post at parent.
 func RepliesTo(parent string, posts []poster.Post) []poster.Post {
 	var replies []poster.Post
 	for _, post := range posts {
@@ -47,13 +45,21 @@ func RepliesTo(parent string, posts []poster.Post) []poster.Post {
 	return replies
 }
 
-// SamePost reports whether a and b are status URLs of the same post, matched by status ID.
+// SamePost reports whether a and b are status URLs of the same post, matched by status ID so
+// handle case and spelling cannot matter.
 func SamePost(a, b string) bool {
 	id := statusID(a)
 	return id != "" && id == statusID(b)
 }
 
-// SameLink reports whether a and b link to the same article, matched as Find matches URLs.
+// NewerPost reports whether status URL a is a later post than b; X status IDs grow over time.
+func NewerPost(a, b string) bool {
+	idA, idB := statusID(a), statusID(b)
+	return len(idA) > len(idB) || len(idA) == len(idB) && idA > idB
+}
+
+// SameLink reports whether a and b link to the same article: host and path match, ignoring case,
+// scheme, www, queries and edge slashes.
 func SameLink(a, b string) bool {
 	hostA, pathA, okA := split(a)
 	hostB, pathB, okB := split(b)

@@ -304,6 +304,7 @@ func (a *app) recoverPosting() bool {
 		entry.Status = state.StatusUncertain
 		entry.LastError = "post outcome was not saved (orchestrator stopped or the state write failed)"
 		entry.NextAttemptAt = now.Add(uncertainMinimum)
+		slog.Warn("attempt interrupted before its outcome was saved; it is uncertain", "guid", guid, "title", entry.Title, "post", entry.PostURL, "attempts", entry.Attempts)
 		a.store.SetAt(guid, &entry, now)
 		changed = true
 	}
@@ -457,12 +458,11 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	return nil
 }
 
-// pendingPost returns the GUID of another unfinished entry for the same article whose post
-// awaits its link reply or may already be on X after an uncertain attempt, or "". Only an
-// entry that has no post and is not uncertain waits, and only for one that has or may have a
-// post, so entries never wait on each other.
+// pendingPost returns the GUID of another unfinished entry whose headline for this article is or
+// may be on X without its link, or "". Such an entry never waits itself, so no two entries wait
+// on each other.
 func (a *app) pendingPost(guid string, entry *state.Entry) string {
-	if entry.PostURL != "" || entry.Status == state.StatusUncertain {
+	if a.headlineWithoutLink(entry) {
 		return ""
 	}
 	for _, other := range a.headlineSiblings(guid, entry.Link) {
@@ -479,7 +479,7 @@ func (a *app) headlineSiblings(guid, link string) []string {
 	var siblings []string
 	for other := range a.store.Items {
 		entry := a.store.Items[other]
-		if other != guid && headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
+		if other != guid && a.headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
 			siblings = append(siblings, other)
 		}
 	}
@@ -488,17 +488,24 @@ func (a *app) headlineSiblings(guid, link string) []string {
 }
 
 // headlineWithoutLink reports whether entry's headline is or may be on X without its link reply:
-// a post awaiting its reply, an uncertain attempt, or an entry that expired in either state.
-func headlineWithoutLink(entry *state.Entry) bool {
+// a post awaiting its reply, an uncertain headline-only attempt, or an entry that expired in
+// either state. An attempt that carried the link is found on X by it instead.
+func (a *app) headlineWithoutLink(entry *state.Entry) bool {
 	switch entry.Status {
 	case state.StatusRetry:
 		return entry.PostURL != ""
 	case state.StatusUncertain:
-		return true
+		return entry.PostURL != "" || a.linkInReply(entry)
 	case state.StatusFailedTerminal:
-		return entry.PostURL != "" || strings.HasPrefix(entry.LastError, uncertainExpired)
+		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && a.linkInReply(entry))
 	}
 	return false
+}
+
+// linkInReply reports whether entry's post leaves the article link to a reply; text-only posts
+// keep it, since its preview card is their only image.
+func (a *app) linkInReply(entry *state.Entry) bool {
+	return a.cfg.LinkInReply && entry.Format != state.FormatText
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -524,12 +531,13 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 	return now.Sub(start) > a.cfg.MaxAge
 }
 
-// uncertainExpired starts the error of an entry that expired while its post may be on X;
-// headlineWithoutLink and existing state files rely on this prefix.
+// uncertainExpired starts the error of an entry that expired after an uncertain attempt without a
+// known post. headlineWithoutLink matches it, also in state saved by earlier releases, so the
+// text must not change.
 const uncertainExpired = "retry window expired while the outcome was uncertain"
 
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
-	// An expiring entry without a post of its own defers to another entry whose headline is or may be on X.
+	// An expiring entry without a post of its own points to another entry whose headline is or may be on X.
 	sibling := a.siblingNote(guid, entry.Link)
 	switch {
 	case entry.Status == "": // not in state yet
@@ -565,18 +573,23 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	return a.record(guid, entry)
 }
 
-// siblingNote points to another entry whose headline is or may be on X, preferring a known post.
+// siblingNote points to another entry whose headline is or may be on X, preferring the newest
+// known post: a later republish asked for the earlier ones to be deleted.
 func (a *app) siblingNote(guid, link string) string {
 	siblings := a.headlineSiblings(guid, link)
-	for _, other := range siblings {
-		if post := a.store.Items[other].PostURL; post != "" {
-			return "covered by feed entry " + other + ", whose headline is on X as " + post + " without its link; do not post this article again"
-		}
-	}
 	if len(siblings) == 0 {
 		return ""
 	}
-	return "covered by feed entry " + siblings[0] + ", whose headline may be on X without its link; post this article only if X shows no post for it"
+	newest := ""
+	for _, other := range siblings {
+		if post := a.store.Items[other].PostURL; post != "" && (newest == "" || dedupe.NewerPost(post, a.store.Items[newest].PostURL)) {
+			newest = other
+		}
+	}
+	if newest != "" {
+		return "covered by feed entry " + newest + ", whose headline is on X as " + a.store.Items[newest].PostURL + " without its link; do not post this article again"
+	}
+	return "covered by feed entry " + siblings[0] + ", whose headline may be on X without its link; post this article only if X shows no post with its headline"
 }
 
 // publish posts the article, then its link reply when the post leaves the link out.
@@ -603,8 +616,7 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 		if err != nil {
 			return err
 		}
-		// Text-only posts keep the link: its preview card is their only image.
-		withReply := a.cfg.LinkInReply && entry.Format != state.FormatText
+		withReply := a.linkInReply(entry)
 		text := postText(item)
 		if withReply {
 			text = headline(item)

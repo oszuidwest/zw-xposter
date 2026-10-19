@@ -55,11 +55,13 @@ function expandedUrls(legacy, note) {
 
 // X sends IDs as decimal strings; numbers would lose precision and arrays only coerce.
 const isDecimalID = (value) => typeof value === 'string' && /^\d+$/.test(value);
+// X handles are 1-15 letters, digits or underscores; anything else would break a status URL.
+const isHandle = (value) => typeof value === 'string' && /^\w{1,15}$/.test(value);
 
 // Returns 'own' or 'foreign', undefined for an unknown author, or null for a malformed one,
 // which must not decide authorship either way.
 function author(userId, handle, ownId, username) {
-  if ((userId != null && !isDecimalID(userId)) || (handle != null && typeof handle !== 'string')) return null;
+  if ((userId != null && !isDecimalID(userId)) || (handle != null && !isHandle(handle))) return null;
   if ((ownId && userId === ownId) || handle?.toLowerCase() === username.toLowerCase()) return 'own';
   if ((ownId && userId) || handle) return 'foreign';
   return undefined;
@@ -262,7 +264,8 @@ export function parseCreateTweetResponse(body, username, { inReplyTo } = {}) {
     throw new Error(`X published the reply under ${parent ? `post ${parent}` : 'no post'} instead of ${inReplyTo}`);
   }
 
-  return { id, url: `https://x.com/${screenName(result) || username}/status/${id}` };
+  const handle = screenName(result);
+  return { id, url: `https://x.com/${isHandle(handle) ? handle : username}/status/${id}` };
 }
 
 // Preserve the error and click state so the orchestrator can reconcile uncertain outcomes.
