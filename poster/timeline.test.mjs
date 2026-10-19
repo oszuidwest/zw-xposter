@@ -449,7 +449,10 @@ for (const [name, change] of [
     delete legacy.in_reply_to_screen_name;
   }],
   ['a malformed parent ID', (legacy) => {
-    legacy.in_reply_to_status_id_str = 'x';
+    legacy.in_reply_to_status_id_str = '1x2';
+  }],
+  ['an empty parent ID', (legacy) => {
+    legacy.in_reply_to_status_id_str = '';
   }],
   // A number would round the ID, so the link reply would not match its post.
   ['a numeric rather than string parent ID', (legacy) => {

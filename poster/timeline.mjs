@@ -63,7 +63,7 @@ function replyParent(legacy, ownId, username, handle) {
   if (parentId === undefined || parentId === null) return {};
   const parentUser = legacy.in_reply_to_user_id_str;
   const parentHandle = legacy.in_reply_to_screen_name;
-  // A malformed parent ID, parent user ID or handle must not decide authorship either way.
+  // A malformed parent ID would attach the reply to the wrong post; a malformed parent user ID or handle must not decide authorship either way.
   if (!isDecimalID(parentId)
     || (parentUser != null && !isDecimalID(parentUser))
     || (parentHandle != null && typeof parentHandle !== 'string')) return { unreadable: true };

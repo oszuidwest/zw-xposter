@@ -304,7 +304,7 @@ func TestPollOtherGUIDWaitsOnlyForUnfinishedOwner(t *testing.T) {
 		{"unlisted uncertain owner", state.Entry{Status: state.StatusUncertain, Attempts: 1, PostURL: mainURL}, true},
 		// Its lost response may hide a headline already on X.
 		{"uncertain owner without a post", state.Entry{Status: state.StatusUncertain, Attempts: 1}, true},
-		{"retry owner without a post", state.Entry{Status: state.StatusRetry, Attempts: 1, NextAttemptAt: testNow.Add(time.Hour)}, false},
+		{"retry owner without a post", state.Entry{Status: state.StatusRetry, Attempts: 1}, false},
 		// The owner gave up with an alert; the new entry publishes the article itself.
 		{"expired owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, PostURL: mainURL}, false},
 		{"other article", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL, Link: "https://example.invalid/other"}, false},
