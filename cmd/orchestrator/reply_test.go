@@ -3,7 +3,6 @@ package main
 import (
 	"cmp"
 	"encoding/json"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -108,7 +107,8 @@ func TestPollReplyFailureRetriesOnlyTheReply(t *testing.T) {
 	var fail atomic.Bool
 	fail.Store(true)
 	fixture := newReplyTest(t, &pollTestOptions{
-		now: func() time.Time { return time.Unix(0, clock.Load()).UTC() },
+		extra: []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow}},
+		now:   func() time.Time { return time.Unix(0, clock.Load()).UTC() },
 		recent: ownPosts(t, map[string]any{
 			"id": "1", "url": mainURL, "text": "Synthetic article https://t.co/media", "urls": []string{},
 		}),
@@ -122,10 +122,15 @@ func TestPollReplyFailureRetriesOnlyTheReply(t *testing.T) {
 	})
 
 	entry := fixture.poll()
-	if entry.Status != state.StatusRetry || entry.PostURL != mainURL || !strings.Contains(entry.LastError, "link reply") {
+	if entry.Status != state.StatusRetry || entry.PostURL != mainURL || entry.ReplyURL != "" || !strings.Contains(entry.LastError, "link reply") {
 		t.Fatalf("after failed reply: %#v", entry)
 	}
 	testutil.Equal(t, entry.NextAttemptAt, testNow.Add(retryDelay(2)))
+	if second, ok := fixture.app.store.Items["guid-2"]; ok {
+		t.Fatalf("second must stay untouched while the first can reply: %#v", second)
+	}
+	fixture.assertCalls(1, 1)
+	testutil.Equal(t, fixture.replyCalls.Load(), 1)
 
 	fail.Store(false)
 	clock.Store(entry.NextAttemptAt.UnixNano())
@@ -264,24 +269,6 @@ func addArticleEntry(fixture *pollTest, guid string, entry *state.Entry) {
 	fixture.app.store.SetAt(guid, entry, testNow.Add(-time.Hour))
 }
 
-func TestPollOtherGUIDWaitsWhileOwnerCanStillReply(t *testing.T) {
-	fixture := newReplyTest(t, &pollTestOptions{
-		extra: []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow}},
-		// The first entry's reply fails in the same poll, so X shows no link yet.
-		reply: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-			testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{"error": "reply button missing", "clicked": false})
-		},
-	})
-	if first := fixture.poll(); first.Status != state.StatusRetry || first.PostURL != mainURL || first.ReplyURL != "" {
-		t.Fatalf("first = %#v", first)
-	}
-	if second, ok := fixture.app.store.Items["guid-2"]; ok {
-		t.Fatalf("second must stay untouched while the first can reply: %#v", second)
-	}
-	fixture.assertCalls(1, 1)
-	testutil.Equal(t, fixture.replyCalls.Load(), 1)
-}
-
 func TestPollOtherGUIDWaitsOnlyForUnfinishedOwner(t *testing.T) {
 	for _, tt := range []struct {
 		name  string
@@ -417,20 +404,18 @@ func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { retu
 func pollMails(t *testing.T, fixture *pollTest) []string {
 	t.Helper()
 	var mails []string
-	mail := httptest.NewTestServer(t, graphMailHandler(t, func(subject, body string) { mails = append(mails, subject+"\n"+body) }))
-	// Send mail to the test server and only the poster to the network; the global override forbids t.Parallel.
+	graph := graphMailHandler(t, func(subject, body string) { mails = append(mails, subject+"\n"+body) })
+	// Only the poster reaches the network; the global override forbids t.Parallel.
 	posterHost := strings.TrimPrefix(fixture.app.cfg.PosterURL, "http://")
 	original := http.DefaultTransport
 	defer func() { http.DefaultTransport = original }()
 	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
-		switch r.URL.Host {
-		case posterHost:
+		if r.URL.Host == posterHost {
 			return original.RoundTrip(r)
-		case "login.microsoftonline.com", "graph.microsoft.com":
-			return mail.Client().Transport.RoundTrip(r)
 		}
-		t.Errorf("unexpected request to %s", r.URL)
-		return nil, errors.New("unexpected request")
+		w := httptest.NewRecorder()
+		graph.ServeHTTP(w, r)
+		return w.Result(), nil
 	})
 	cfg := config.GraphConfig{TenantID: "offline", ClientID: "offline", ClientSecret: "offline",
 		FromAddress: "sender@example.invalid", Recipients: []string{"ops@example.invalid"}}

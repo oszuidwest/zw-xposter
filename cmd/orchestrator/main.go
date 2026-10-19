@@ -491,22 +491,17 @@ func (a *app) headlineSiblings(guid, link string) []string {
 // a post awaiting its reply, an uncertain headline-only attempt, or an entry that expired in
 // either state. An attempt that carried the link is found on X by it instead.
 func headlineWithoutLink(entry *state.Entry) bool {
+	// Older state lacks LinkInPost; text posts have always carried the link.
+	headlineOnly := !entry.LinkInPost && entry.Format != state.FormatText
 	switch entry.Status {
 	case state.StatusRetry:
 		return entry.PostURL != ""
 	case state.StatusUncertain:
-		return entry.PostURL != "" || headlineOnly(entry)
+		return entry.PostURL != "" || headlineOnly
 	case state.StatusFailedTerminal:
-		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && headlineOnly(entry))
+		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && headlineOnly)
 	}
 	return false
-}
-
-// headlineOnly reports whether entry's last attempt left the article link to a reply, as saved
-// with it, so a later LINK_IN_REPLY change cannot hide it. Entries saved before LinkInPost count
-// as headline-only unless they are text posts, which always keep the link.
-func headlineOnly(entry *state.Entry) bool {
-	return !entry.LinkInPost && entry.Format != state.FormatText
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.

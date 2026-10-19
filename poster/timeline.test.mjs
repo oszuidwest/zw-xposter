@@ -482,39 +482,28 @@ test('self-replies keep their parent and replies to others are skipped', () => {
   assert.equal(oldestEntry, Date.parse('2026-10-02T11:00:00.000Z'));
 });
 
-for (const [name, change] of [
-  ['no parent author', (legacy) => {
-    delete legacy.in_reply_to_user_id_str;
-    delete legacy.in_reply_to_screen_name;
-  }],
-  ['a malformed parent ID', (legacy) => {
-    legacy.in_reply_to_status_id_str = '1x2';
-  }],
-  ['an empty parent ID', (legacy) => {
-    legacy.in_reply_to_status_id_str = '';
-  }],
-  ['a numeric rather than string parent ID', (legacy) => {
-    legacy.in_reply_to_status_id_str = Number(legacy.in_reply_to_status_id_str);
-  }],
-  ['a parent ID inside an array', (legacy) => {
-    legacy.in_reply_to_status_id_str = [legacy.in_reply_to_status_id_str];
-  }],
-  ['a non-numeric parent user ID beside its own handle', (legacy) => {
-    legacy.in_reply_to_user_id_str = 'x';
-  }],
-  ['a numeric rather than string parent user ID', (legacy) => {
-    legacy.in_reply_to_user_id_str = Number(account.ownId);
-  }],
-  ['a non-string parent handle beside its own user ID', (legacy) => {
-    legacy.in_reply_to_screen_name = 5;
-  }],
-  ['a parent handle with a path beside its own user ID', (legacy) => {
-    legacy.in_reply_to_screen_name = 'fixture_account/status/1';
-  }],
+test('a reply with no parent author makes the result incomplete', () => {
+  const body = replyPage();
+  const legacy = moduleResult(body, 1).legacy;
+  delete legacy.in_reply_to_user_id_str;
+  delete legacy.in_reply_to_screen_name;
+  assertUnreadable(body);
+});
+
+const parentID = moduleResult(replyPage(), 1).legacy.in_reply_to_status_id_str;
+for (const [name, field, value] of [
+  ['a malformed parent ID', 'in_reply_to_status_id_str', '1x2'],
+  ['an empty parent ID', 'in_reply_to_status_id_str', ''],
+  ['a numeric rather than string parent ID', 'in_reply_to_status_id_str', Number(parentID)],
+  ['a parent ID inside an array', 'in_reply_to_status_id_str', [parentID]],
+  ['a non-numeric parent user ID beside its own handle', 'in_reply_to_user_id_str', 'x'],
+  ['a numeric rather than string parent user ID', 'in_reply_to_user_id_str', Number(account.ownId)],
+  ['a non-string parent handle beside its own user ID', 'in_reply_to_screen_name', 5],
+  ['a parent handle with a path beside its own user ID', 'in_reply_to_screen_name', 'fixture_account/status/1'],
 ]) {
   test(`a reply with ${name} makes the result incomplete`, () => {
     const body = replyPage();
-    change(moduleResult(body, 1).legacy);
+    moduleResult(body, 1).legacy[field] = value;
     assertUnreadable(body);
   });
 }
