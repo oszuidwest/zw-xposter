@@ -88,8 +88,11 @@ function random(min, max) {
   return min + Math.random() * (max - min);
 }
 
+// Only the offline browser test switches human pacing off; any other value keeps it.
+const PACING = process.env.POSTER_PACING === '0' ? 0 : 1;
+
 function pause(minMs, maxMs) {
-  return sleep(random(minMs, maxMs));
+  return sleep(random(minMs, maxMs) * PACING);
 }
 
 // Keep Accept-Language and navigator.languages aligned through Chromium's profile.
@@ -177,7 +180,7 @@ async function humanClick(page, locator, { throwIfCancelled = () => {}, onPress 
   if (covering) throw new Error(`element is covered by ${covering}`);
   const from = mouse.get(page) || { x: random(100, 600), y: random(100, 500) };
   const bend = { x: random(-80, 80), y: random(-60, 60) };
-  const steps = Math.round(random(18, 35));
+  const steps = PACING ? Math.round(random(18, 35)) : 1;
   for (let i = 1; i <= steps; i++) {
     const t = i / steps;
     // Ease in-out, plus a bend that is largest halfway.

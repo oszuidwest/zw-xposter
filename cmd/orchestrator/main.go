@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -303,6 +304,7 @@ func (a *app) recoverPosting() bool {
 		entry.Status = state.StatusUncertain
 		entry.LastError = "post outcome was not saved (orchestrator stopped or the state write failed)"
 		entry.NextAttemptAt = now.Add(uncertainMinimum)
+		slog.Warn("attempt interrupted before its outcome was saved; it is uncertain", "guid", guid, "title", entry.Title, "post", entry.PostURL, "attempts", entry.Attempts)
 		a.store.SetAt(guid, &entry, now)
 		changed = true
 	}
@@ -412,7 +414,12 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 		workflow.recentLoaded = true
 		a.status.RecordXCheck(a.now())
 	}
-	if existing := dedupe.Find(item.Link, workflow.recent); existing != nil {
+	candidates := workflow.recent
+	if entry.PostURL != "" {
+		// Only a link reply under this entry's own post completes it.
+		candidates = dedupe.RepliesTo(entry.PostURL, workflow.recent)
+	}
+	if existing := dedupe.Find(item.Link, candidates); existing != nil {
 		slog.Info("already on X, not posting", "title", item.Title, "post", existing.URL)
 		entry.Status = state.StatusPosted
 		entry.PostURL = existing.URL
@@ -426,6 +433,11 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	// An uncertain publication must be reconciled by its article link, never by headline alone.
 	if entry.PostURL == "" && entry.Attempts > 0 && entry.Status == state.StatusUncertain {
 		return a.record(item.GUID, &entry)
+	}
+	// Waiting records nothing; it ends when X shows the article link or the other entry expires with its alert.
+	if owner := a.pendingPost(item.GUID, &entry); owner != "" {
+		slog.Info("another feed entry for this article is unresolved on X; waiting", "title", item.Title, "owner_guid", owner)
+		return nil
 	}
 
 	if workflow.attempted && !a.cfg.DryRun {
@@ -444,6 +456,52 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	workflow.attempted = true
 	return nil
+}
+
+// pendingPost returns the GUID of another unfinished entry whose headline for this article is or
+// may be on X without its link, or "". Such an entry never waits itself, so no two entries wait
+// on each other.
+func (a *app) pendingPost(guid string, entry *state.Entry) string {
+	if headlineWithoutLink(entry) {
+		return ""
+	}
+	for _, other := range a.headlineSiblings(guid, entry.Link) {
+		if !a.store.Done(other) {
+			return other
+		}
+	}
+	return ""
+}
+
+// headlineSiblings returns the sorted GUIDs of the other entries for the article at link for which
+// headlineWithoutLink holds.
+func (a *app) headlineSiblings(guid, link string) []string {
+	var siblings []string
+	for other := range a.store.Items {
+		entry := a.store.Items[other]
+		if other != guid && headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
+			siblings = append(siblings, other)
+		}
+	}
+	slices.Sort(siblings)
+	return siblings
+}
+
+// headlineWithoutLink reports whether entry's headline is or may be on X without its link reply:
+// a post awaiting its reply, an uncertain headline-only attempt, or an entry that expired in
+// either state. An attempt that carried the link is found on X by it instead.
+func headlineWithoutLink(entry *state.Entry) bool {
+	// Older state lacks LinkInPost; text posts have always carried the link.
+	headlineOnly := !entry.LinkInPost && entry.Format != state.FormatText
+	switch entry.Status {
+	case state.StatusRetry:
+		return entry.PostURL != ""
+	case state.StatusUncertain:
+		return entry.PostURL != "" || headlineOnly
+	case state.StatusFailedTerminal:
+		return entry.PostURL != "" || (strings.HasPrefix(entry.LastError, uncertainExpired) && headlineOnly)
+	}
+	return false
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -469,11 +527,19 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 	return now.Sub(start) > a.cfg.MaxAge
 }
 
+// uncertainExpired starts the error of an entry that expired after an uncertain attempt without a
+// known post. headlineWithoutLink matches it, also in state saved by earlier releases, so the
+// text must not change.
+const uncertainExpired = "retry window expired while the outcome was uncertain"
+
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
+	// An expiring entry without a post of its own points to another entry whose headline is or may be on X.
+	sibling := a.siblingNote(guid, entry.Link)
 	switch {
 	case entry.Status == "": // not in state yet
 		entry.Status = state.StatusMissed
-		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt)
+		entry.LastError = sibling
+		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt, "last_error", entry.LastError)
 	case entry.PostURL != "":
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
@@ -485,16 +551,41 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	case entry.Status == state.StatusUncertain:
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
-		entry.LastError = "retry window expired while the outcome was uncertain; the post may already be on X and must be checked manually"
+		entry.LastError = uncertainExpired + "; the post may already be on X and must be checked manually"
 		if previousError != "" {
 			entry.LastError += ": " + previousError
+		}
+		if sibling != "" {
+			entry.LastError += "; " + sibling
 		}
 		slog.Error("uncertain retry window expired; the post may already be on X and must be checked manually", "title", entry.Title, "attempts", entry.Attempts, "last_error", entry.LastError)
 	default:
 		entry.Status = state.StatusFailedTerminal
+		if sibling != "" {
+			entry.LastError = strings.TrimPrefix(entry.LastError+"; "+sibling, "; ")
+		}
 		slog.Error("retry window expired", "title", entry.Title, "attempts", entry.Attempts, "last_error", entry.LastError)
 	}
 	return a.record(guid, entry)
+}
+
+// siblingNote points to another entry whose headline is or may be on X, preferring the newest
+// known post: a later republish asked for the earlier ones to be deleted.
+func (a *app) siblingNote(guid, link string) string {
+	siblings := a.headlineSiblings(guid, link)
+	if len(siblings) == 0 {
+		return ""
+	}
+	newest := ""
+	for _, other := range siblings {
+		if post := a.store.Items[other].PostURL; post != "" && (newest == "" || dedupe.NewerPost(post, a.store.Items[newest].PostURL)) {
+			newest = other
+		}
+	}
+	if newest != "" {
+		return "covered by feed entry " + newest + ", whose headline is on X as " + a.store.Items[newest].PostURL + " without its link; do not post this article again"
+	}
+	return "covered by feed entry " + siblings[0] + ", whose headline may be on X without its link; post this article only if X shows no post with its headline"
 }
 
 // publish posts the article, then its link reply when the post leaves the link out.
@@ -551,16 +642,13 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 			return a.record(item.GUID, entry)
 		}
 
-		if err := a.beginAttempt(item.GUID, entry); err != nil {
+		entry.LinkInPost = !withReply
+		if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
 			closeVideo()
 			return err
 		}
 		var result poster.Result
 		var postErr error
-		if err := ctx.Err(); err != nil {
-			closeVideo()
-			return err
-		}
 		if video != nil {
 			result, postErr = a.poster.PostVideo(ctx, text, video, entry.Format == state.FormatVideoCaptions)
 		} else {
@@ -610,7 +698,7 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 		return nil, a.record(item.GUID, entry)
 	}
 
-	if err := a.beginAttempt(item.GUID, entry); err != nil {
+	if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
 		return nil, err
 	}
 	url, err := a.poster.Reply(ctx, entry.PostURL, text)
@@ -626,14 +714,15 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 }
 
 // beginAttempt saves the attempt before the poster call, so a crash leaves it uncertain rather than unrecorded.
-func (a *app) beginAttempt(guid string, entry *state.Entry) error {
+// It reports cancellation only after the save, so a stop skips the call and the saved attempt is recovered as uncertain.
+func (a *app) beginAttempt(ctx context.Context, guid string, entry *state.Entry) error {
 	entry.Status = state.StatusPosting
 	entry.Attempts++
 	entry.NextAttemptAt = time.Time{}
 	if err := a.record(guid, entry); err != nil {
 		return fmt.Errorf("save write-ahead state: %w", err)
 	}
-	return nil
+	return ctx.Err()
 }
 
 // scheduleRetry delays the next attempt; only confirmed pre-click failures avoid the uncertain-outcome delay.
@@ -757,6 +846,10 @@ func (a *app) record(guid string, entry *state.Entry) error {
 	if event, ok := workflowAlert(guid, &previous, entry); ok {
 		a.alerts.Notify(event)
 	}
+	if event, ok := a.republishAlert(guid, &previous, entry); ok {
+		slog.Warn("article posted again after another feed entry gave up", "title", entry.Title, "post", entry.PostURL)
+		a.alerts.Notify(event)
+	}
 	return nil
 }
 
@@ -781,6 +874,38 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 		Key:     fmt.Sprintf("workflow:%s:%s", entry.Status, guid),
 		Summary: summary,
 		Details: details,
+	}, true
+}
+
+// republishAlert fires once this entry's own headline is on X while another entry for the article
+// has its headline there without a link: that entry's alert asked for its post to be completed
+// or checked by hand, which would put the article on X twice.
+func (a *app) republishAlert(guid string, previous, entry *state.Entry) (notify.Event, bool) {
+	// A post found on X is this entry's own only after its own attempt with a lost outcome.
+	own := !entry.FoundOnX || previous.Status == state.StatusUncertain
+	if previous.PostURL != "" || entry.PostURL == "" || !own {
+		return notify.Event{}, false
+	}
+	earlier := a.headlineSiblings(guid, entry.Link)
+	if len(earlier) == 0 {
+		return notify.Event{}, false
+	}
+	lines := []string{articleDetails(guid, &state.Entry{Title: entry.Title, Link: entry.Link}), "New post: " + entry.PostURL}
+	for _, other := range earlier {
+		switch post := a.store.Items[other].PostURL; {
+		case dedupe.SamePost(post, entry.PostURL): // a link reply found on X completed the earlier entry's own post
+			return notify.Event{}, false
+		case post == "":
+			lines = append(lines, "Earlier attempt: "+other+", outcome unknown: if X shows another post with this headline besides the new post, delete it; do not add the article link to it.")
+		default:
+			lines = append(lines, "Earlier attempt: "+other+", post "+post+": delete it; do not add the article link to it.")
+		}
+	}
+	lines = append(lines, "This replaces the earlier alert for "+strings.Join(earlier, " and ")+".")
+	return notify.Event{
+		Key:     "workflow:posted-again:" + guid,
+		Summary: "Article posted again after an earlier attempt gave up",
+		Details: strings.Join(lines, "\n"),
 	}, true
 }
 

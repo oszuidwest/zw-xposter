@@ -176,6 +176,30 @@ for (const [name, ownId, change] of [
     delete post.core;
     delete post.legacy;
   }],
+  ['a numeric rather than string user ID and no handle', account.ownId, (post) => {
+    delete post.core;
+    post.legacy.user_id_str = Number(account.ownId);
+  }],
+  ['a non-decimal user ID beside its own handle', account.ownId, (post) => {
+    post.legacy.user_id_str = '1x1';
+  }],
+  ['a non-string handle beside its own user ID', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 5;
+  }],
+  ['a falsy non-string handle beside a valid legacy handle', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 0;
+    post.core.user_results.result.legacy = { screen_name: 'fixture_account' };
+  }],
+  ['a handle with a path beside its own user ID', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 'fixture_account/status/1';
+  }],
+  ['an empty user ID beside its own handle', account.ownId, (post) => {
+    post.legacy.user_id_str = '';
+  }],
+  ['a non-decimal user ID beside another handle', account.ownId, (post) => {
+    post.legacy.user_id_str = '1x1';
+    post.core.user_results.result.core.screen_name = 'other_account';
+  }],
 ]) {
   test(`a post with ${name} makes the result incomplete`, async () => {
     assertUnreadable(await withFirstPost(fixture('user-tweets-page-1.json'), change), /without a readable author/, ownId);
@@ -196,6 +220,9 @@ for (const [name, ownId, change, ids] of [
   }, ['900000000000000101', '900000000000000102']],
   ['recognizes an own post by the handle without a user ID', account.ownId, (post) => {
     delete post.legacy.user_id_str;
+  }, ['900000000000000101', '900000000000000102']],
+  ['recognizes an own post by the handle beside a null user ID', account.ownId, (post) => {
+    post.legacy.user_id_str = null;
   }, ['900000000000000101', '900000000000000102']],
   ['recognizes an own post by the legacy handle without a user ID', account.ownId, (post) => {
     delete post.legacy.user_id_str;
@@ -409,6 +436,18 @@ test('reads the CreateTweet handle like timeline posts, including the legacy fie
   );
 });
 
+test('a CreateTweet response with a malformed handle falls back to the username', () => {
+  const body = { data: { create_tweet: { tweet_results: { result: {
+    rest_id: '900000000000000602',
+    core: { user_results: { result: { core: { screen_name: 'fixture_account/status/1' } } } },
+  } } } } };
+
+  assert.equal(
+    parseCreateTweetResponse(body, 'fallback_account').url,
+    'https://x.com/fallback_account/status/900000000000000602',
+  );
+});
+
 test('rejects a CreateTweet response without a rest_id', async () => {
   const body = await fixture('create-tweet-without-id.json');
 
@@ -443,21 +482,38 @@ test('self-replies keep their parent and replies to others are skipped', () => {
   assert.equal(oldestEntry, Date.parse('2026-10-02T11:00:00.000Z'));
 });
 
-for (const [name, change] of [
-  ['no parent author', (legacy) => {
-    delete legacy.in_reply_to_user_id_str;
-    delete legacy.in_reply_to_screen_name;
-  }],
-  ['a malformed parent ID', (legacy) => {
-    legacy.in_reply_to_status_id_str = 'x';
-  }],
+test('a reply with no parent author makes the result incomplete', () => {
+  const body = replyPage();
+  const legacy = moduleResult(body, 1).legacy;
+  delete legacy.in_reply_to_user_id_str;
+  delete legacy.in_reply_to_screen_name;
+  assertUnreadable(body);
+});
+
+const parentID = moduleResult(replyPage(), 1).legacy.in_reply_to_status_id_str;
+for (const [name, field, value] of [
+  ['a malformed parent ID', 'in_reply_to_status_id_str', '1x2'],
+  ['an empty parent ID', 'in_reply_to_status_id_str', ''],
+  ['a numeric rather than string parent ID', 'in_reply_to_status_id_str', Number(parentID)],
+  ['a parent ID inside an array', 'in_reply_to_status_id_str', [parentID]],
+  ['a non-numeric parent user ID beside its own handle', 'in_reply_to_user_id_str', 'x'],
+  ['a numeric rather than string parent user ID', 'in_reply_to_user_id_str', Number(account.ownId)],
+  ['a non-string parent handle beside its own user ID', 'in_reply_to_screen_name', 5],
+  ['a parent handle with a path beside its own user ID', 'in_reply_to_screen_name', 'fixture_account/status/1'],
 ]) {
   test(`a reply with ${name} makes the result incomplete`, () => {
     const body = replyPage();
-    change(moduleResult(body, 1).legacy);
+    moduleResult(body, 1).legacy[field] = value;
     assertUnreadable(body);
   });
 }
+
+test('a reply is recognized as a self-reply by the parent user ID alone', () => {
+  const body = replyPage();
+  delete moduleResult(body, 1).legacy.in_reply_to_screen_name;
+  const { posts } = parseUserTweetsPayload(body, account);
+  assert.equal(posts[1].replyTo, 'https://x.com/fixture_account/status/900000000000000901');
+});
 
 test('a reply is recognized as a self-reply by the parent handle alone', () => {
   const body = replyPage();
@@ -466,6 +522,13 @@ test('a reply is recognized as a self-reply by the parent handle alone', () => {
   legacy.in_reply_to_screen_name = 'Fixture_Account';
   const { posts } = parseUserTweetsPayload(body, { ...account, ownId: '' });
   assert.equal(posts[1].replyTo, 'https://x.com/Fixture_Account/status/900000000000000901');
+});
+
+test('a reply is recognized as a self-reply by the parent handle beside a null parent user ID', () => {
+  const body = replyPage();
+  moduleResult(body, 1).legacy.in_reply_to_user_id_str = null;
+  const { posts } = parseUserTweetsPayload(body, account);
+  assert.equal(posts[1].replyTo, 'https://x.com/fixture_account/status/900000000000000901');
 });
 
 test('a reply must be published under the requested post', () => {

@@ -1,6 +1,7 @@
 package dedupe
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
@@ -46,40 +47,24 @@ func TestFind(t *testing.T) {
 	}
 }
 
-func TestFindHeadline(t *testing.T) {
-	const (
-		headline = "Gemeente investeert in fietspaden & bruggen"
-		mainURL  = "https://x.com/fixture_account/status/101"
-	)
-	main := poster.Post{URL: mainURL, Text: "Gemeente investeert in fietspaden &amp; bruggen https://t.co/media"}
-	tests := []struct {
-		name  string
-		posts []poster.Post
-		want  string
-	}{
-		{"headline with media link", []poster.Post{main}, mainURL},
-		{"spacing differs", []poster.Post{{URL: mainURL, Text: " Gemeente investeert in\nfietspaden & bruggen "}}, mainURL},
-		{"other headline", []poster.Post{{URL: mainURL, Text: "Gemeente investeert in fietspaden"}}, ""},
-		{"headline with more text", []poster.Post{{URL: mainURL, Text: headline + " vandaag"}}, ""},
-		{"reply with the headline", []poster.Post{{URL: mainURL, Text: headline, ReplyTo: "https://x.com/fixture_account/status/100"}}, ""},
-		{"already has a link reply", []poster.Post{main, {
-			URL: "https://x.com/fixture_account/status/102", URLs: []string{"https://example.invalid/other"},
-			ReplyTo: "https://x.com/Fixture_Account/status/101",
-		}}, ""},
-		{"reply without a link does not claim the post", []poster.Post{main, {
-			URL: "https://x.com/fixture_account/status/102", Text: "Update", ReplyTo: mainURL,
-		}}, mainURL},
+func TestRepliesTo(t *testing.T) {
+	const parent = "https://x.com/fixture_account/status/101"
+	posts := []poster.Post{
+		{URL: parent},
+		{URL: "https://x.com/fixture_account/status/102", ReplyTo: "https://x.com/Fixture_Account/status/101"},
+		{URL: "https://x.com/fixture_account/status/103", ReplyTo: "https://x.com/fixture_account/status/100"},
+		{URL: "https://x.com/fixture_account/status/104", ReplyTo: "https://x.com/fixture_account/status/1010"},
 	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			got := ""
-			if post := FindHeadline(headline, tt.posts); post != nil {
-				got = post.URL
-			}
-			testutil.Equal(t, got, tt.want)
-		})
+	var got []string
+	for _, reply := range RepliesTo(parent, posts) {
+		got = append(got, reply.URL)
 	}
-	testutil.Equal(t, FindHeadline(" ", []poster.Post{{URL: mainURL}}), (*poster.Post)(nil))
+	testutil.Equal(t, strings.Join(got, " "), "https://x.com/fixture_account/status/102")
+	testutil.Equal(t, len(RepliesTo("https://x.com/fixture_account", posts)), 0)
+}
+
+func TestSameLinkRejectsInvalidLinks(t *testing.T) {
+	testutil.Equal(t, SameLink("not a link", "not a link"), false)
 }
 
 func TestFindReturnsLinkedReply(t *testing.T) {
@@ -88,4 +73,10 @@ func TestFindReturnsLinkedReply(t *testing.T) {
 	if got == nil || got.ReplyTo != reply.ReplyTo {
 		t.Fatalf("Find() = %#v, want the reply with its parent", got)
 	}
+}
+
+func TestNewerPost(t *testing.T) {
+	testutil.Equal(t, NewerPost("https://x.com/a/status/1010", "https://x.com/a/status/999"), true)
+	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/102"), false)
+	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/101"), false)
 }

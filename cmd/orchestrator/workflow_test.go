@@ -7,16 +7,13 @@ import (
 	"html"
 	"io"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
-	"github.com/oszuidwest/zw-xposter/internal/config"
 	"github.com/oszuidwest/zw-xposter/internal/feed"
-	"github.com/oszuidwest/zw-xposter/internal/notify"
 	"github.com/oszuidwest/zw-xposter/internal/state"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
@@ -164,34 +161,17 @@ func TestPollFlagsVideoAddedAfterPosting(t *testing.T) {
 			recent, posts := fixture.recentCalls.Load(), fixture.postCalls.Load()
 
 			fixture.items[0].VideoURL = fixture.app.cfg.PosterURL + "/video.mp4"
-			// Replace HTTP only; the global override forbids t.Parallel.
-			original := http.DefaultTransport
-			t.Cleanup(func() { http.DefaultTransport = original })
-			var alerts int
-			server := httptest.NewTestServer(t, graphMailHandler(t, func(subject, body string) {
-				alerts++
-				testutil.Equal(t, subject, "[ALERT] Video added after posting - ZuidWest X Poster")
-				for _, detail := range []string{
-					"Condition: workflow:video-added:" + fixture.item.GUID,
-					"Title: " + fixture.item.Title, "Link: " + fixture.item.Link,
-					"Post: " + before.PostURL, "Video: " + fixture.items[0].VideoURL,
-				} {
-					if !strings.Contains(body, detail) {
-						t.Errorf("alert body %q does not contain %q", body, detail)
-					}
-				}
-			}))
-			http.DefaultTransport = server.Client().Transport
-			cfg := config.GraphConfig{TenantID: "offline", ClientID: "offline", ClientSecret: "offline",
-				FromAddress: "sender@example.invalid", Recipients: []string{"ops@example.invalid"}}
+			var mails []string
 			for range 2 {
-				fixture.app.alerts = notify.New(&cfg, 24*time.Hour)
-				t.Cleanup(fixture.app.alerts.Close)
-				entry := fixture.poll()
-				fixture.app.alerts.Close() // Drain delivery before checking this poll's mail.
+				mails = append(mails, pollMails(t, fixture)...)
+				entry := fixture.app.store.Items[fixture.item.GUID]
 				testutil.Equal(t, entry.AwaitingVideo, tt.wantEnd)
 				testutil.Equal(t, entry.PostURL, before.PostURL)
-				testutil.Equal(t, alerts, tt.wantAlerts)
+				testutil.Equal(t, len(mails), tt.wantAlerts)
+			}
+			if tt.wantAlerts > 0 {
+				assertMails(t, mails, []string{"Video added after posting", "Condition: workflow:video-added:" + fixture.item.GUID,
+					"Title: " + fixture.item.Title, "Link: " + fixture.item.Link, "Post: " + before.PostURL, "Video: " + fixture.items[0].VideoURL})
 			}
 			fixture.assertCalls(recent, posts)
 			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].AwaitingVideo, tt.wantEnd)

@@ -39,7 +39,8 @@ type Entry struct {
 	FoundOnX          bool      `json:"found_on_x,omitempty"` // includes our own earlier attempts
 	Attempts          int       `json:"attempts,omitempty"`
 	LastError         string    `json:"last_error,omitempty"`
-	Format            string    `json:"format,omitempty"` // a Format constant; empty in legacy state
+	Format            string    `json:"format,omitempty"`       // a Format constant; empty in legacy state
+	LinkInPost        bool      `json:"link_in_post,omitempty"` // the last attempt carried the article link in its post
 	FallbackReason    string    `json:"fallback_reason,omitempty"`
 	AwaitingVideo     bool      `json:"awaiting_video,omitempty"` // media chosen while the feed listed no video
 	PublishedAt       time.Time `json:"published_at,omitzero"`

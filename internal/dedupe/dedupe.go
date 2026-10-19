@@ -2,27 +2,19 @@
 package dedupe
 
 import (
-	"html"
 	"net/url"
-	"regexp"
 	"strings"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
 )
 
-// Find returns the post that links to the article at link, or nil.
-//
-// URLs match on host and path, ignoring case, scheme, www, queries and edge slashes.
+// Find returns the post that links to the article at link, matched by SameLink, or nil.
 // Text links also match after stripping dlvr.it's zero-width spaces.
 func Find(link string, posts []poster.Post) *poster.Post {
-	host, path, ok := split(link)
-	if !ok {
-		return nil
-	}
 	for i := range posts {
 		post := &posts[i]
 		for _, u := range post.URLs {
-			if h, p, ok := split(u); ok && h == host && p == path {
+			if SameLink(link, u) {
 				return post
 			}
 		}
@@ -32,7 +24,7 @@ func Find(link string, posts []poster.Post) *poster.Post {
 			if !strings.Contains(word, "://") {
 				word = "https://" + word
 			}
-			if h, p, ok := split(word); ok && h == host && p == path {
+			if SameLink(link, word) {
 				return post
 			}
 		}
@@ -42,39 +34,39 @@ func Find(link string, posts []poster.Post) *poster.Post {
 
 const zeroWidthSpace = "\u200b"
 
-// FindHeadline returns an own top-level post whose text is headline, or nil.
-//
-// It finds headline-only posts whose link reply is missing. Posts that already
-// have a linked reply belong to an article and are skipped; X's media links and
-// HTML escapes are ignored.
-func FindHeadline(headline string, posts []poster.Post) *poster.Post {
-	want := plainText(headline)
-	if want == "" {
-		return nil
-	}
-	linked := make(map[string]bool)
+// RepliesTo returns the replies to the post at parent.
+func RepliesTo(parent string, posts []poster.Post) []poster.Post {
+	var replies []poster.Post
 	for _, post := range posts {
-		if post.ReplyTo != "" && len(post.URLs) > 0 {
-			linked[statusID(post.ReplyTo)] = true
+		if SamePost(parent, post.ReplyTo) {
+			replies = append(replies, post)
 		}
 	}
-	for i := range posts {
-		post := &posts[i]
-		if post.ReplyTo == "" && !linked[statusID(post.URL)] && plainText(post.Text) == want {
-			return post
-		}
-	}
-	return nil
+	return replies
 }
 
-var shortLink = regexp.MustCompile(`https://t\.co/\S+`)
-
-func plainText(text string) string {
-	text = shortLink.ReplaceAllString(html.UnescapeString(text), "")
-	return strings.Join(strings.Fields(text), " ")
+// SamePost reports whether a and b are status URLs of the same post, matched by status ID so
+// handle case and spelling cannot matter.
+func SamePost(a, b string) bool {
+	id := statusID(a)
+	return id != "" && id == statusID(b)
 }
 
-// statusID returns the post ID in a status URL, so handle case and spelling cannot matter.
+// NewerPost reports whether status URL a is a later post than b; X status IDs grow over time.
+func NewerPost(a, b string) bool {
+	idA, idB := statusID(a), statusID(b)
+	return len(idA) > len(idB) || len(idA) == len(idB) && idA > idB
+}
+
+// SameLink reports whether a and b link to the same article: host and path match, ignoring case,
+// scheme, www, queries and edge slashes.
+func SameLink(a, b string) bool {
+	hostA, pathA, okA := split(a)
+	hostB, pathB, okB := split(b)
+	return okA && okB && hostA == hostB && pathA == pathB
+}
+
+// statusID returns the post ID in a status URL.
 func statusID(raw string) string {
 	_, id, ok := strings.Cut(raw, "/status/")
 	if !ok {
