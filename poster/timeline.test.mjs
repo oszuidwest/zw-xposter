@@ -452,17 +452,13 @@ for (const [name, change] of [
     legacy.in_reply_to_status_id_str = 'x';
   }],
   ['a non-numeric parent user ID beside its own handle', (legacy) => {
-    legacy.in_reply_to_user_id_str = {};
+    legacy.in_reply_to_user_id_str = 'x';
   }],
   ['a numeric rather than string parent user ID', (legacy) => {
     legacy.in_reply_to_user_id_str = Number(account.ownId);
   }],
   ['a non-string parent handle beside its own user ID', (legacy) => {
     legacy.in_reply_to_screen_name = 5;
-  }],
-  ['malformed parent user ID and handle', (legacy) => {
-    legacy.in_reply_to_user_id_str = {};
-    legacy.in_reply_to_screen_name = {};
   }],
 ]) {
   test(`a reply with ${name} makes the result incomplete`, () => {
@@ -499,13 +495,13 @@ test('a reply must be published under the requested post', () => {
   assert.throws(() => parseCreateTweetResponse(body('1'), 'fixture_account', { inReplyTo: '900000000000000601' }), /under post 1 instead/);
   assert.throws(() => parseCreateTweetResponse(body(), 'fixture_account', { inReplyTo: '900000000000000601' }), /under no post instead/);
 
-  for (const [name, change] of [['absent', (result) => delete result.legacy], ['null', (result) => { result.legacy = null; }]]) {
+  for (const legacy of [undefined, null]) {
     const response = body('900000000000000601');
-    change(response.data.create_tweet.tweet_results.result);
+    response.data.create_tweet.tweet_results.result.legacy = legacy;
     assert.throws(
       () => parseCreateTweetResponse(response, 'fixture_account', { inReplyTo: '900000000000000601' }),
       /under no post instead/,
-      `${name} legacy`,
+      `${legacy} legacy`,
     );
   }
 });

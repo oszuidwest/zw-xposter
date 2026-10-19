@@ -65,7 +65,7 @@ function replyParent(legacy, ownId, username, handle) {
     || (parentUser != null && !(typeof parentUser === 'string' && /^\d+$/.test(parentUser)))
     || (parentHandle != null && typeof parentHandle !== 'string')) return { unreadable: true };
   const own = (ownId && parentUser === ownId)
-    || (typeof parentHandle === 'string' && parentHandle.toLowerCase() === username.toLowerCase());
+    || parentHandle?.toLowerCase() === username.toLowerCase();
   const foreign = (ownId && parentUser && parentUser !== ownId) || (parentHandle && !own);
   if (!own && !foreign) return { unreadable: true };
   if (!own) return { foreign: true };
