@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"slices"
+	"strings"
 	"sync"
 	"syscall"
 	"time"
@@ -466,12 +467,39 @@ func (a *app) pendingPost(guid string, entry *state.Entry) string {
 	}
 	for other := range a.store.Items {
 		owner := a.store.Items[other]
-		mayBeOnX := owner.PostURL != "" || owner.Status == state.StatusUncertain
-		if other != guid && mayBeOnX && !a.store.Done(other) && dedupe.SameLink(entry.Link, owner.Link) {
+		if other != guid && !a.store.Done(other) && headlineWithoutLink(&owner) && dedupe.SameLink(entry.Link, owner.Link) {
 			return other
 		}
 	}
 	return ""
+}
+
+// headlineSiblings returns, sorted, the GUIDs of the other entries for the article at link whose
+// headline is or may be on X without its link, still pending or given up.
+func (a *app) headlineSiblings(guid, link string) []string {
+	var siblings []string
+	for other := range a.store.Items {
+		entry := a.store.Items[other]
+		if other != guid && headlineWithoutLink(&entry) && dedupe.SameLink(link, entry.Link) {
+			siblings = append(siblings, other)
+		}
+	}
+	slices.Sort(siblings)
+	return siblings
+}
+
+// headlineWithoutLink reports whether entry's headline is or may be on X without its link reply:
+// a post awaiting its reply, an uncertain attempt, or an entry that expired in either state.
+func headlineWithoutLink(entry *state.Entry) bool {
+	switch entry.Status {
+	case state.StatusRetry:
+		return entry.PostURL != ""
+	case state.StatusUncertain:
+		return true
+	case state.StatusFailedTerminal:
+		return entry.PostURL != "" || strings.HasPrefix(entry.LastError, uncertainExpired)
+	}
+	return false
 }
 
 // recentLookback includes pending replays; truncating it could miss duplicates.
@@ -497,11 +525,18 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 	return now.Sub(start) > a.cfg.MaxAge
 }
 
+// uncertainExpired starts the error of an entry that expired while its post may be on X;
+// headlineWithoutLink and existing state files rely on this prefix.
+const uncertainExpired = "retry window expired while the outcome was uncertain"
+
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
+	// An expiring entry without a post of its own defers to another entry whose headline is or may be on X.
+	sibling := a.siblingNote(guid, entry.Link)
 	switch {
 	case entry.Status == "": // not in state yet
 		entry.Status = state.StatusMissed
-		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt)
+		entry.LastError = sibling
+		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt, "last_error", entry.LastError)
 	case entry.PostURL != "":
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
@@ -513,16 +548,36 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	case entry.Status == state.StatusUncertain:
 		entry.Status = state.StatusFailedTerminal
 		previousError := entry.LastError
-		entry.LastError = "retry window expired while the outcome was uncertain; the post may already be on X and must be checked manually"
+		entry.LastError = uncertainExpired + "; the post may already be on X and must be checked manually"
 		if previousError != "" {
 			entry.LastError += ": " + previousError
+		}
+		if sibling != "" {
+			entry.LastError += "; " + sibling
 		}
 		slog.Error("uncertain retry window expired; the post may already be on X and must be checked manually", "title", entry.Title, "attempts", entry.Attempts, "last_error", entry.LastError)
 	default:
 		entry.Status = state.StatusFailedTerminal
+		if sibling != "" {
+			entry.LastError = strings.TrimPrefix(entry.LastError+"; "+sibling, "; ")
+		}
 		slog.Error("retry window expired", "title", entry.Title, "attempts", entry.Attempts, "last_error", entry.LastError)
 	}
 	return a.record(guid, entry)
+}
+
+// siblingNote points to another entry whose headline is or may be on X, preferring a known post.
+func (a *app) siblingNote(guid, link string) string {
+	siblings := a.headlineSiblings(guid, link)
+	for _, other := range siblings {
+		if post := a.store.Items[other].PostURL; post != "" {
+			return "covered by feed entry " + other + ", whose headline is on X as " + post + " without its link; do not post this article again"
+		}
+	}
+	if len(siblings) == 0 {
+		return ""
+	}
+	return "covered by feed entry " + siblings[0] + ", whose headline may be on X without its link; post this article only if X shows no post for it"
 }
 
 // publish posts the article, then its link reply when the post leaves the link out.
@@ -782,6 +837,10 @@ func (a *app) record(guid string, entry *state.Entry) error {
 	if event, ok := workflowAlert(guid, &previous, entry); ok {
 		a.alerts.Notify(event)
 	}
+	if event, ok := a.republishAlert(guid, &previous, entry); ok {
+		slog.Warn("article posted again after another feed entry gave up", "title", entry.Title, "post", entry.PostURL)
+		a.alerts.Notify(event)
+	}
 	return nil
 }
 
@@ -806,6 +865,38 @@ func workflowAlert(guid string, previous, entry *state.Entry) (notify.Event, boo
 		Key:     fmt.Sprintf("workflow:%s:%s", entry.Status, guid),
 		Summary: summary,
 		Details: details,
+	}, true
+}
+
+// republishAlert fires once this entry's own headline is on X while another entry for the article
+// has its headline there without a link: that entry's alert asked for its post to be completed
+// or checked by hand, which would put the article on X twice.
+func (a *app) republishAlert(guid string, previous, entry *state.Entry) (notify.Event, bool) {
+	// A post found on X is this entry's own only after its own attempt with a lost outcome.
+	own := !entry.FoundOnX || previous.Status == state.StatusUncertain
+	if previous.PostURL != "" || entry.PostURL == "" || !own {
+		return notify.Event{}, false
+	}
+	earlier := a.headlineSiblings(guid, entry.Link)
+	if len(earlier) == 0 {
+		return notify.Event{}, false
+	}
+	lines := []string{articleDetails(guid, &state.Entry{Title: entry.Title, Link: entry.Link}), "New post: " + entry.PostURL}
+	for _, other := range earlier {
+		switch post := a.store.Items[other].PostURL; {
+		case dedupe.SamePost(post, entry.PostURL): // a link reply found on X completed the earlier entry's own post
+			return notify.Event{}, false
+		case post == "":
+			lines = append(lines, "Earlier attempt: "+other+", outcome unknown: if X shows another post with this headline besides the new post, delete it; do not add the article link to it.")
+		default:
+			lines = append(lines, "Earlier attempt: "+other+", post "+post+": delete it; do not add the article link to it.")
+		}
+	}
+	lines = append(lines, "This replaces the earlier alert for "+strings.Join(earlier, " and ")+".")
+	return notify.Event{
+		Key:     "workflow:posted-again:" + guid,
+		Summary: "Article posted again after an earlier attempt gave up",
+		Details: strings.Join(lines, "\n"),
 	}, true
 }
 

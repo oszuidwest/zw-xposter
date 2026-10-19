@@ -86,3 +86,10 @@ func TestFindReturnsLinkedReply(t *testing.T) {
 		t.Fatalf("Find() = %#v, want the reply with its parent", got)
 	}
 }
+
+func TestSamePost(t *testing.T) {
+	const post = "https://x.com/fixture_account/status/101"
+	testutil.Equal(t, SamePost(post, "https://x.com/Fixture_Account/status/101"), true)
+	testutil.Equal(t, SamePost(post, "https://x.com/fixture_account/status/1010"), false)
+	testutil.Equal(t, SamePost("", ""), false)
+}

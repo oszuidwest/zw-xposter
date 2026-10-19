@@ -4,12 +4,15 @@ import (
 	"cmp"
 	"encoding/json"
 	"net/http"
+	"net/http/httptest"
 	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/oszuidwest/zw-xposter/internal/config"
 	"github.com/oszuidwest/zw-xposter/internal/feed"
+	"github.com/oszuidwest/zw-xposter/internal/notify"
 	"github.com/oszuidwest/zw-xposter/internal/state"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
@@ -379,7 +382,6 @@ func TestPollReplayWaitsForExpiringOwnerThenPublishes(t *testing.T) {
 }
 
 func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
-	const otherPost = "https://x.invalid/fixture/status/7"
 	for _, tt := range []struct {
 		name          string
 		first, second state.Entry
@@ -420,4 +422,208 @@ func TestPendingPostNeverMakesUncertainEntriesWait(t *testing.T) {
 	// An uncertain entry is reconciled by its own link and must never wait, or two could wait on each other.
 	entry.Status = state.StatusUncertain
 	testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &entry), "")
+}
+
+type roundTripFunc func(*http.Request) (*http.Response, error)
+
+func (f roundTripFunc) RoundTrip(r *http.Request) (*http.Response, error) { return f(r) }
+
+// pollMails runs one poll with alert e-mail enabled and returns each mail as subject and body.
+func pollMails(t *testing.T, fixture *pollTest) []string {
+	t.Helper()
+	var mails []string
+	mail := httptest.NewTestServer(t, graphMailHandler(t, func(subject, body string) { mails = append(mails, subject+"\n"+body) }))
+	// Replace HTTP for Microsoft hosts only; the global override forbids t.Parallel.
+	original := http.DefaultTransport
+	defer func() { http.DefaultTransport = original }()
+	http.DefaultTransport = roundTripFunc(func(r *http.Request) (*http.Response, error) {
+		switch r.URL.Hostname() {
+		case "login.microsoftonline.com", "graph.microsoft.com":
+			return mail.Client().Transport.RoundTrip(r)
+		}
+		return original.RoundTrip(r)
+	})
+	cfg := config.GraphConfig{TenantID: "offline", ClientID: "offline", ClientSecret: "offline",
+		FromAddress: "sender@example.invalid", Recipients: []string{"ops@example.invalid"}}
+	fixture.app.alerts = notify.New(&cfg, 24*time.Hour)
+	// A failed poll must not leave delivery running against another test's transport.
+	defer fixture.app.alerts.Close()
+	fixture.poll()
+	fixture.app.alerts.Close() // Drain delivery before reading the mails.
+	fixture.app.alerts = nil
+	return mails
+}
+
+// assertMails checks each mail's subject and that its body contains the wanted lines.
+func assertMails(t *testing.T, mails []string, want ...[]string) {
+	t.Helper()
+	if len(mails) != len(want) {
+		t.Fatalf("mails = %q, want %d", mails, len(want))
+	}
+	for i, lines := range want {
+		subject, _, _ := strings.Cut(mails[i], "\n")
+		testutil.Equal(t, subject, "[ALERT] "+lines[0]+" - ZuidWest X Poster")
+		for _, line := range lines[1:] {
+			if !strings.Contains(mails[i], line) {
+				t.Errorf("mail %d = %q, want %q", i, mails[i], line)
+			}
+		}
+	}
+}
+
+const (
+	otherPost   = "https://x.invalid/fixture/status/7"
+	gaveUp      = "Article posting failed permanently"
+	postedAgain = "Article posted again after an earlier attempt gave up"
+)
+
+func TestPollRepublishAlertsOnceTheNewHeadlineIsOnX(t *testing.T) {
+	expired := testNow.Add(-25 * time.Hour)
+	failReply := func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+		testutil.JSON(t, w, http.StatusInternalServerError, map[string]any{"error": "reply button missing", "clicked": false})
+	}
+	for _, tt := range []struct {
+		name    string
+		owner   state.Entry
+		reply   func(http.ResponseWriter, *http.Request, feed.Item)
+		earlier []string
+	}{
+		{"owner with a post", state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: otherPost, PublishedAt: expired}, nil,
+			[]string{"Earlier attempt: guid-0, post " + otherPost + ": delete it; do not add the article link to it."}},
+		// The alert must not wait for the link reply, which may never be confirmed.
+		{"failing link reply", state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: otherPost, PublishedAt: expired}, failReply,
+			[]string{"Earlier attempt: guid-0, post " + otherPost}},
+		{"uncertain owner without a post", state.Entry{Status: state.StatusUncertain, Attempts: 1, PublishedAt: expired}, nil,
+			[]string{"Earlier attempt: guid-0, outcome unknown: if X shows another post with this headline besides the new post, delete it"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newReplyTest(t, &pollTestOptions{reply: tt.reply})
+			addArticleEntry(fixture, "guid-0", &tt.owner)
+			// The unlisted owner expires with its alert first, so the new entry publishes the article itself.
+			mails := pollMails(t, fixture)
+			testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].PostURL, mainURL)
+			assertMails(t, mails, []string{gaveUp, "Condition: workflow:failed_terminal:guid-0"},
+				append([]string{postedAgain, "Condition: workflow:posted-again:guid-1", "New post: " + mainURL, "This replaces the earlier alert for guid-0."}, tt.earlier...))
+		})
+	}
+}
+
+func TestPollRepublishAlertNamesEveryEarlierHeadline(t *testing.T) {
+	fixture := newReplyTest(t, &pollTestOptions{})
+	// The first entry gave up with a post, the second expired while uncertain; neither is listed.
+	addArticleEntry(fixture, "guid-a", &state.Entry{Status: state.StatusFailedTerminal, Attempts: 2, PostURL: otherPost})
+	addArticleEntry(fixture, "guid-b", &state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, LastError: uncertainExpired + "; checked manually"})
+	// An entry for another article must not be named.
+	addArticleEntry(fixture, "guid-c", &state.Entry{Status: state.StatusUncertain, Attempts: 1, Link: fixture.item.Link + "-other"})
+	assertMails(t, pollMails(t, fixture), []string{postedAgain,
+		"New post: " + mainURL + "\nEarlier attempt: guid-a, post " + otherPost + ": delete it; do not add the article link to it.\nEarlier attempt: guid-b, outcome unknown",
+		"This replaces the earlier alert for guid-a and guid-b."})
+}
+
+func TestPollNoRepublishAlertWithoutEarlierHeadline(t *testing.T) {
+	expired := testNow.Add(-25 * time.Hour)
+	for _, tt := range []struct {
+		name  string
+		other state.Entry
+	}{
+		// Every attempt failed before the click, so no headline of the other entry reached X.
+		{"failed before the click", state.Entry{Status: state.StatusRetry, Attempts: 3, LastError: "image upload failed", PublishedAt: expired}},
+		{"other article", state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: otherPost, PublishedAt: expired, Link: "https://example.invalid/other"}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newReplyTest(t, &pollTestOptions{})
+			addArticleEntry(fixture, "guid-0", &tt.other)
+			assertMails(t, pollMails(t, fixture), []string{gaveUp, "Condition: workflow:failed_terminal:guid-0"})
+			testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusPosted)
+		})
+	}
+}
+
+func TestPollRepublishAlertForOwnLostPostFoundOnX(t *testing.T) {
+	const ownPost = "https://x.invalid/fixture/status/9"
+	lost := state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatText, UpdatedAt: testNow.Add(-time.Hour)}
+	for _, tt := range []struct {
+		name    string
+		initial state.Entry
+		found   map[string]any
+		want    [][]string
+	}{
+		{"own post", lost, map[string]any{"id": "9", "url": ownPost}, [][]string{{postedAgain, "New post: " + ownPost, "Earlier attempt: guid-0, post " + otherPost}}},
+		// Attempts that failed before the click put nothing on X, so the found post is someone else's.
+		{"post after a failed attempt", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatText}, map[string]any{"id": "9", "url": ownPost}, nil},
+		// A link reply someone added under the earlier post completes that post instead.
+		// X may spell the handle differently from the saved post URL.
+		{"reply under the earlier post", lost, map[string]any{"id": "8", "url": "https://x.invalid/fixture/status/8", "replyTo": "https://x.invalid/Fixture/status/7"}, nil},
+		// Without an attempt of its own, a post found on X was posted by someone else.
+		{"post of a new entry", state.Entry{}, map[string]any{"id": "9", "url": ownPost}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{
+				initial: tt.initial,
+				recent: func(w http.ResponseWriter, _ *http.Request, item feed.Item) {
+					tt.found["text"], tt.found["urls"] = item.Title+" "+item.Link, []string{item.Link}
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{tt.found}, "complete": true})
+				},
+			})
+			addArticleEntry(fixture, "guid-0", &state.Entry{Status: state.StatusFailedTerminal, Attempts: 2, PostURL: otherPost})
+			assertMails(t, pollMails(t, fixture), tt.want...)
+			testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].FoundOnX, true)
+			fixture.assertCalls(1, 0)
+		})
+	}
+}
+
+func TestPollExpiredEntryPointsToSiblingHeadline(t *testing.T) {
+	expired := testNow.Add(-25 * time.Hour)
+	onX := "covered by feed entry guid-0, whose headline is on X as " + otherPost + " without its link; do not post this article again"
+	mayBeOnX := "covered by feed entry guid-0, whose headline may be on X without its link; post this article only if X shows no post for it"
+	withPost := state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: otherPost}
+	for _, tt := range []struct {
+		name            string
+		listed          bool
+		entry, owner    state.Entry
+		status, wantErr string
+	}{
+		// The unlisted owner expires first, through expireUnlisted.
+		{"waiter never saved", false, state.Entry{}, withPost, state.StatusMissed, onX},
+		// The owner comes later in the feed, so it is still pending when the waiter expires.
+		{"owner later in the feed", true, state.Entry{}, withPost, state.StatusMissed, onX},
+		{"uncertain owner", false, state.Entry{}, state.Entry{Status: state.StatusUncertain, Attempts: 1}, state.StatusMissed, mayBeOnX},
+		{"waiter failed before the click", false, state.Entry{Status: state.StatusRetry, Attempts: 1, LastError: "image upload failed"}, withPost,
+			state.StatusFailedTerminal, "image upload failed; " + onX},
+		{"uncertain waiter", false, state.Entry{Status: state.StatusUncertain, Attempts: 1, LastError: "lost response"}, withPost,
+			state.StatusFailedTerminal, uncertainExpired + "; the post may already be on X and must be checked manually: lost response; " + onX},
+		// A replayed entry has no error of its own yet.
+		{"replayed waiter", false, state.Entry{Status: state.StatusRetry}, withPost, state.StatusFailedTerminal, onX},
+		// A waiter with its own post reports that post, not the other one.
+		{"waiter with its own post", false, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}, withPost,
+			state.StatusFailedTerminal, "the post is on X, but its link reply may be missing; check it and add the article link manually"},
+		{"other article", false, state.Entry{}, state.Entry{Status: state.StatusUncertain, Attempts: 1, Link: "https://example.invalid/other"}, state.StatusMissed, ""},
+		{"uncertain owner later in the feed", true, state.Entry{}, state.Entry{Status: state.StatusUncertain, Attempts: 1}, state.StatusMissed, mayBeOnX},
+		{"owner never reached X", false, state.Entry{}, state.Entry{Status: state.StatusRetry, Attempts: 3}, state.StatusMissed, ""},
+		{"owner later in the feed never reached X", true, state.Entry{}, state.Entry{Status: state.StatusRetry, Attempts: 3}, state.StatusMissed, ""},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			opts := &pollTestOptions{published: expired, initial: tt.entry}
+			if tt.listed {
+				opts.extra = []feed.Item{{GUID: "guid-0", Title: "Same article", Link: "/article", Published: expired}}
+			}
+			fixture := newReplyTest(t, opts)
+			tt.owner.PublishedAt = expired
+			addArticleEntry(fixture, "guid-0", &tt.owner)
+			entry := fixture.poll()
+			testutil.Equal(t, entry.Status, tt.status)
+			testutil.Equal(t, entry.LastError, tt.wantErr)
+			fixture.assertCalls(0, 0)
+		})
+	}
+}
+
+func TestPollExpiredEntryPrefersSiblingWithAKnownPost(t *testing.T) {
+	expired := testNow.Add(-25 * time.Hour)
+	fixture := newReplyTest(t, &pollTestOptions{published: expired})
+	addArticleEntry(fixture, "guid-a", &state.Entry{Status: state.StatusUncertain, Attempts: 1, PublishedAt: expired})
+	addArticleEntry(fixture, "guid-b", &state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: otherPost, PublishedAt: expired})
+	entry := fixture.poll()
+	testutil.Equal(t, entry.LastError, "covered by feed entry guid-b, whose headline is on X as "+otherPost+" without its link; do not post this article again")
 }
