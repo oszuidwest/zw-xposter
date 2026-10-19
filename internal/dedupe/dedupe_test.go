@@ -70,7 +70,7 @@ func TestSameLink(t *testing.T) {
 	}{
 		{link, "http://zuidwestupdate.nl/NEWS/housing-development?utm=x", true},
 		{link, "https://www.zuidwestupdate.nl/news/other/", false},
-		{link, "https://www.zuidwestupdate.nl/", false},
+		{link, "https://example.nl/news/housing-development/", false},
 		{"not a link", "not a link", false},
 	} {
 		t.Run(tt.b, func(t *testing.T) {

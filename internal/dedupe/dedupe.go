@@ -13,14 +13,10 @@ import (
 // URLs match on host and path, ignoring case, scheme, www, queries and edge slashes.
 // Text links also match after stripping dlvr.it's zero-width spaces.
 func Find(link string, posts []poster.Post) *poster.Post {
-	host, path, ok := split(link)
-	if !ok {
-		return nil
-	}
 	for i := range posts {
 		post := &posts[i]
 		for _, u := range post.URLs {
-			if h, p, ok := split(u); ok && h == host && p == path {
+			if SameLink(link, u) {
 				return post
 			}
 		}
@@ -30,7 +26,7 @@ func Find(link string, posts []poster.Post) *poster.Post {
 			if !strings.Contains(word, "://") {
 				word = "https://" + word
 			}
-			if h, p, ok := split(word); ok && h == host && p == path {
+			if SameLink(link, word) {
 				return post
 			}
 		}
@@ -42,13 +38,9 @@ const zeroWidthSpace = "\u200b"
 
 // RepliesTo returns the replies to the post at parent, matched by status ID so handle case and spelling cannot matter.
 func RepliesTo(parent string, posts []poster.Post) []poster.Post {
-	id := statusID(parent)
-	if id == "" {
-		return nil
-	}
 	var replies []poster.Post
 	for _, post := range posts {
-		if statusID(post.ReplyTo) == id {
+		if SamePost(parent, post.ReplyTo) {
 			replies = append(replies, post)
 		}
 	}

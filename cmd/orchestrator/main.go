@@ -465,17 +465,16 @@ func (a *app) pendingPost(guid string, entry *state.Entry) string {
 	if entry.PostURL != "" || entry.Status == state.StatusUncertain {
 		return ""
 	}
-	for other := range a.store.Items {
-		owner := a.store.Items[other]
-		if other != guid && !a.store.Done(other) && headlineWithoutLink(&owner) && dedupe.SameLink(entry.Link, owner.Link) {
+	for _, other := range a.headlineSiblings(guid, entry.Link) {
+		if !a.store.Done(other) {
 			return other
 		}
 	}
 	return ""
 }
 
-// headlineSiblings returns, sorted, the GUIDs of the other entries for the article at link whose
-// headline is or may be on X without its link, still pending or given up.
+// headlineSiblings returns the sorted GUIDs of the other entries for the article at link for which
+// headlineWithoutLink holds.
 func (a *app) headlineSiblings(guid, link string) []string {
 	var siblings []string
 	for other := range a.store.Items {

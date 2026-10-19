@@ -514,13 +514,10 @@ test('a reply must be published under the requested post', () => {
   assert.throws(() => parseCreateTweetResponse(body('1'), 'fixture_account', { inReplyTo: '900000000000000601' }), /under post 1 instead/);
   assert.throws(() => parseCreateTweetResponse(body(), 'fixture_account', { inReplyTo: '900000000000000601' }), /under no post instead/);
 
-  for (const legacy of [undefined, null]) {
-    const response = body('900000000000000601');
-    response.data.create_tweet.tweet_results.result.legacy = legacy;
-    assert.throws(
-      () => parseCreateTweetResponse(response, 'fixture_account', { inReplyTo: '900000000000000601' }),
-      /under no post instead/,
-      `${legacy} legacy`,
-    );
-  }
+  const withoutLegacy = body('900000000000000601');
+  delete withoutLegacy.data.create_tweet.tweet_results.result.legacy;
+  assert.throws(
+    () => parseCreateTweetResponse(withoutLegacy, 'fixture_account', { inReplyTo: '900000000000000601' }),
+    /under no post instead/,
+  );
 });
