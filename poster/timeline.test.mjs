@@ -181,8 +181,8 @@ for (const [name, ownId, change] of [
     delete post.core;
     post.legacy.user_id_str = Number(account.ownId);
   }],
-  ['a malformed user ID beside its own handle', account.ownId, (post) => {
-    post.legacy.user_id_str = {};
+  ['a non-decimal user ID beside its own handle', account.ownId, (post) => {
+    post.legacy.user_id_str = '1x1';
   }],
   ['a non-string handle beside its own user ID', account.ownId, (post) => {
     post.core.user_results.result.core.screen_name = 5;
