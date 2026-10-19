@@ -100,11 +100,16 @@
     '/fixture_account/with_replies': 'UserRepliesTimeline',
   }[location.pathname];
   if (profileTimeline) {
+    // Without pacing, recentPosts can finish its scroll attempts before these responses arrive;
+    // showing the posts only after them, continuation included, keeps the test deterministic.
+    const articles = document.querySelectorAll('article');
+    for (const article of articles) article.hidden = true;
     (async () => {
       const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
       if (response.headers.get('x-offline-next')) {
         await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
       }
+      for (const article of articles) article.hidden = false;
     })();
   }
 </script>
