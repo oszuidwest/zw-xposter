@@ -270,7 +270,7 @@ func TestPollOtherGUIDWaitsWhileOwnerCanStillReply(t *testing.T) {
 	}{
 		// The first entry's reply fails in the same poll, so X shows no link yet.
 		{"same poll", state.Entry{}, 1},
-		// The first entry waits for its reply retry when the second appears.
+		// The first entry's reply retry is not due yet when the second appears.
 		{"later poll", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL, NextAttemptAt: testNow.Add(time.Hour)}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
@@ -361,7 +361,7 @@ func TestPollReplayWaitsForExpiringOwnerThenPublishes(t *testing.T) {
 		extra: []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow.Add(-25 * time.Hour)}},
 	})
 	testutil.NoError(t, fixture.app.replay(t.Context(), fixture.item.GUID))
-	addArticleEntry(fixture, "guid-2", &state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: mainURL, PublishedAt: testNow.Add(-25 * time.Hour)})
+	addArticleEntry(fixture, "guid-2", &state.Entry{Status: state.StatusRetry, Attempts: 2, PostURL: mainURL})
 
 	entry := fixture.poll()
 	if entry.Status != state.StatusRetry || entry.PostURL != "" {
@@ -387,7 +387,7 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 	}{
 		// Neither has a post on X, so the first publishes and the second finds its link reply.
 		{"no posts yet", state.Entry{Status: state.StatusRetry, Attempts: 1}, state.Entry{Status: state.StatusRetry, Attempts: 1}, 1},
-		// An entry with its own post replies under it instead of waiting.
+		// An entry with its own post replies under it instead of waiting; the other entry's reply retry is not due yet.
 		{"own post", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: otherPost, NextAttemptAt: testNow.Add(time.Hour)}, 0},
 	} {
 		t.Run(tt.name, func(t *testing.T) {

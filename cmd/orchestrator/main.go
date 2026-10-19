@@ -414,7 +414,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	candidates := workflow.recent
 	if entry.PostURL != "" {
-		// Only a link reply under this article's own post completes it.
+		// Only a link reply under this entry's own post completes it.
 		candidates = dedupe.RepliesTo(entry.PostURL, workflow.recent)
 	}
 	if existing := dedupe.Find(item.Link, candidates); existing != nil {
@@ -650,7 +650,7 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 }
 
 // beginAttempt saves the attempt before the poster call, so a crash leaves it uncertain rather than unrecorded.
-// A cancellation after the save stops before the call; the saved attempt is recovered as uncertain.
+// It reports cancellation only after the save, so a stop skips the call and the saved attempt is recovered as uncertain.
 func (a *app) beginAttempt(ctx context.Context, guid string, entry *state.Entry) error {
 	entry.Status = state.StatusPosting
 	entry.Attempts++

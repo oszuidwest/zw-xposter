@@ -40,7 +40,7 @@ func Find(link string, posts []poster.Post) *poster.Post {
 
 const zeroWidthSpace = "\u200b"
 
-// RepliesTo returns the replies to the post at parent; status IDs match, so handle spelling cannot matter.
+// RepliesTo returns the replies to the post at parent, matched by status ID so handle case and spelling cannot matter.
 func RepliesTo(parent string, posts []poster.Post) []poster.Post {
 	id := statusID(parent)
 	if id == "" {
