@@ -54,9 +54,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   };
   let rejectPost;
   let failPagination;
+  let slowContinuation;
   let profilePages;
   let emptyTab;
-  let scrollTab;
   let holdReplies;
   let repliesRequested;
   let releaseReplies;
@@ -89,9 +89,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failTranscription = false;
     rejectPost = false;
     failPagination = '';
+    slowContinuation = '';
     profilePages = undefined;
     emptyTab = '';
-    scrollTab = '';
     holdReplies = false;
     repliesRequested = Promise.withResolvers();
     releaseReplies = Promise.withResolvers();
@@ -194,6 +194,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         await releaseReplies.promise;
       }
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
+      if (slowContinuation === tab && continuation) await sleep(10_000);
       if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
       }
@@ -203,7 +204,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         headers: {
           ...(firstPage && { 'x-offline-next': 'true' }),
           ...(emptyTab === tab && { 'x-offline-empty': 'true' }),
-          ...(scrollTab === tab && { 'x-offline-scroll': 'true' }),
         },
         body: firstPage || await fixture('user-tweets-end.json'),
       });
@@ -427,13 +427,26 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   await t.test('a tab with visible posts scrolls to load the rest of its timeline', async () => {
-    scrollTab = 'posts';
     profilePages = { posts: await recentFixture('user-originals-timeline.json') };
     // Without the article exit, the wait would only end at the 30 second deadline.
     const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
     assert.equal(response.status, 200);
     assert.equal((await response.json()).complete, true);
   });
+
+  for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
+    await t.test(`a slow continuation in the ${name} tab still completes recent history`, async (t) => {
+      slowContinuation = tab;
+      profilePages = { [tab]: await recentFixture('user-originals-timeline.json') };
+      const wheel = t.mock.method(context.pages()[0].mouse, 'wheel');
+      const response = await fetch(`${base}/recent?hours=1`);
+      assert.equal(response.status, 200);
+      const { posts, complete } = await response.json();
+      assert.equal(complete, true);
+      assert.deepEqual(posts.map((post) => post.id).sort(), ['900000000000001001', '900000000000001005']);
+      assert.equal(wheel.mock.callCount(), 1, 'wait for the continuation before scrolling again');
+    });
+  }
 
   await t.test('replies to an own post with the article link', async () => {
     const response = await reply({ text: '👉 Lees het hele verhaal: https://example.invalid/a', inReplyTo: parent.replace('fixture_account', 'Fixture_Account') });
@@ -637,7 +650,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
     await t.test(`an HTTP failure in ${name} tab pagination refuses the whole recent result`, async () => {
       failPagination = tab;
-      profilePages = { [tab]: await fixture('user-tweets-page-1.json') };
+      profilePages = { [tab]: await recentFixture('user-tweets-page-1.json') };
       const response = await fetch(`${base}/recent?hours=48`);
       assert.equal(response.status, 500);
       assert.match((await response.json()).error, new RegExp(`${name} tab: UserTweets returned HTTP 429`));
