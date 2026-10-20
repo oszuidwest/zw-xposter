@@ -106,6 +106,10 @@
     for (const article of articles) article.hidden = true;
     (async () => {
       const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
+      if (response.headers.get('x-offline-empty')) {
+        for (const article of articles) article.remove();
+        return;
+      }
       if (response.headers.get('x-offline-next')) {
         await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
       }

@@ -623,7 +623,17 @@ async function recentPosts(hours) {
     pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
   };
   const readTab = async (timeline) => {
-    await page.locator('article').first().waitFor();
+    // An empty tab has no article; its complete first page is enough to proceed.
+    const deadline = Date.now() + 30_000;
+    for (;;) {
+      if (timeline.complete() || timeline.failed()) return;
+      if (await page.locator('article').first().isVisible()) break;
+      if (Date.now() >= deadline) {
+        timeline.fail('no visible posts or complete timeline within 30 seconds');
+        return;
+      }
+      await sleep(100);
+    }
     await pause(1500, 3000);
     for (let i = 0; i < 8; i++) {
       await Promise.all(pending);

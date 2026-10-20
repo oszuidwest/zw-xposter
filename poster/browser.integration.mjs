@@ -40,6 +40,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
   const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
+  const recentFixture = async (name) => {
+    const [weekday, day, month, year, time] = new Date(Date.now() - 60_000).toUTCString().replace(',', '').split(' ');
+    return (await fixture(name))
+      .replaceAll(/"created_at": "[^"]+"/g, `"created_at": "${weekday} ${month} ${day} ${time} +0000 ${year}"`);
+  };
   const pageHTML = await fixture('browser-page.html');
   // A fixture edit must not silently disable a swap.
   const swap = (text, from, to) => {
@@ -49,6 +54,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let rejectPost;
   let failPagination;
   let profilePages;
+  let emptyReplies;
   let failVideo;
   let uploadStatus;
   let failCaptions;
@@ -78,6 +84,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     rejectPost = false;
     failPagination = '';
     profilePages = undefined;
+    emptyReplies = false;
     failVideo = false;
     uploadStatus = 200;
     failCaptions = false;
@@ -178,7 +185,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       const firstPage = !continuation && profilePages?.[tab];
       return route.fulfill({
         contentType: 'application/json',
-        headers: firstPage ? { 'x-offline-next': 'true' } : {},
+        headers: {
+          ...(firstPage && { 'x-offline-next': 'true' }),
+          ...(emptyReplies && tab === 'replies' && { 'x-offline-empty': 'true' }),
+        },
         body: firstPage || await fixture('user-tweets-end.json'),
       });
     }
@@ -273,10 +283,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   await t.test('combines headline posts from the Posts tab with link replies from the Replies tab', async () => {
-    const [weekday, day, month, year, time] = new Date(Date.now() - 60_000).toUTCString().replace(',', '').split(' ');
-    const recent = async (name) => (await fixture(name))
-      .replaceAll(/"created_at": "[^"]+"/g, `"created_at": "${weekday} ${month} ${day} ${time} +0000 ${year}"`);
-    profilePages = { posts: await recent('user-originals-timeline.json'), replies: await recent('user-replies-timeline.json') };
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await recentFixture('user-replies-timeline.json') };
     const response = await fetch(`${base}/recent?hours=1`);
     assert.equal(response.status, 200);
     const { posts, complete } = await response.json();
@@ -288,6 +295,38 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       ['900000000000001003', [], status('900000000000001002')],
       ['900000000000001005', ['https://example.invalid/articles/fallback'], undefined],
     ]);
+  });
+
+  await t.test('an empty Replies tab allows publishing the first headline and link reply', async () => {
+    emptyReplies = true;
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    const response = await fetch(`${base}/recent?hours=1`);
+    assert.equal(response.status, 200);
+    const { posts, complete } = await response.json();
+    assert.equal(complete, true);
+    assert.deepEqual(posts.map((post) => post.id).sort(), ['900000000000001001', '900000000000001005']);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+
+    const before = published.length;
+    const headline = await post('First headline', undefined, image);
+    assert.equal(headline.status, 200);
+    assert.equal((await headline.json()).url, parent);
+    const link = '👉 Lees het hele verhaal: https://example.invalid/first-reply';
+    const child = await reply({ text: link, inReplyTo: parent });
+    assert.equal(child.status, 200);
+    assert.equal((await child.json()).url, 'https://x.com/fixture_account/status/900000000000000602');
+    assert.deepEqual(published.slice(before), ['First headline', link]);
+  });
+
+  await t.test('a Replies tab without articles still rejects an unreadable timeline', async () => {
+    emptyReplies = true;
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: JSON.stringify({ data: {} }) };
+    const before = published.length;
+    const response = await fetch(`${base}/recent?hours=1`);
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: UserTweets response has no timeline instructions/);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+    assert.equal(published.length, before);
   });
 
   await t.test('replies to an own post with the article link', async () => {
