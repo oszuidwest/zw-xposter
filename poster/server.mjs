@@ -623,12 +623,12 @@ async function recentPosts(hours) {
     pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
   };
   const readTab = async (timeline) => {
+    const done = () => timeline.complete() || timeline.failed();
     // An empty tab has no article; its complete first page is enough to proceed.
     const deadline = Date.now() + 30_000;
-    for (;;) {
-      if (timeline.complete() || timeline.failed()) break;
-      if (await page.locator('article').first().isVisible()) break;
+    while (!done() && !(await page.locator('article').first().isVisible())) {
       if (Date.now() >= deadline) {
+        // The failure already refuses the result; draining could wait forever on a stalled body.
         timeline.fail('no visible posts or complete timeline within 30 seconds');
         return;
       }
@@ -637,7 +637,7 @@ async function recentPosts(hours) {
     await pause(1500, 3000);
     for (let i = 0; i < 8; i++) {
       await Promise.all(pending);
-      if (timeline.complete() || timeline.failed()) break;
+      if (done()) break;
       await page.mouse.wheel(0, random(1500, 2500));
       await pause(1500, 3000);
     }
