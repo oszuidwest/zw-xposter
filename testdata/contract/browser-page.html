@@ -101,13 +101,20 @@
   }[location.pathname];
   if (profileTimeline) {
     // Without pacing, recentPosts can finish its scroll attempts before these responses arrive;
-    // showing the posts only after them, continuation included, keeps the test deterministic.
+    // by default, showing the posts only after them, continuation included, keeps the test deterministic.
     const articles = document.querySelectorAll('article');
     for (const article of articles) article.hidden = true;
     (async () => {
       const response = await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%7D`);
+      // Like X's empty tab: no articles and no continuation.
       if (response.headers.get('x-offline-empty')) {
         for (const article of articles) article.remove();
+        return;
+      }
+      if (response.headers.get('x-offline-scroll')) {
+        // Like X: show the first page at once and load the next one on scroll.
+        for (const article of articles) article.hidden = false;
+        addEventListener('wheel', () => fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`), { once: true });
         return;
       }
       if (response.headers.get('x-offline-next')) {

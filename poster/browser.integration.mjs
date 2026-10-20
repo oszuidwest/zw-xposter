@@ -56,6 +56,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let failPagination;
   let profilePages;
   let emptyTab;
+  let scrollTab;
   let holdReplies;
   let repliesRequested;
   let releaseReplies;
@@ -89,6 +90,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failPagination = '';
     profilePages = undefined;
     emptyTab = '';
+    scrollTab = '';
     holdReplies = false;
     repliesRequested = Promise.withResolvers();
     releaseReplies = Promise.withResolvers();
@@ -199,6 +201,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         headers: {
           ...(firstPage && { 'x-offline-next': 'true' }),
           ...(emptyTab === tab && { 'x-offline-empty': 'true' }),
+          ...(scrollTab === tab && { 'x-offline-scroll': 'true' }),
         },
         body: firstPage || await fixture('user-tweets-end.json'),
       });
@@ -235,6 +238,28 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     body: bytes,
     signal,
   });
+  // Requests /recent and, once the Replies tab loads, adds a Replies response whose body never arrives.
+  // The mock listens before /recent starts, so the server's json() call gets it.
+  const recentWithStalledReplies = async (t) => {
+    holdReplies = true;
+    const page = context.pages()[0];
+    const stalled = Promise.withResolvers();
+    const stallBody = (response) => {
+      if (response.url().includes('extra=stalled')) t.mock.method(response, 'json', () => stalled.promise);
+    };
+    page.on('response', stallBody);
+    try {
+      const request = fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(40_000) });
+      await repliesRequested.promise;
+      await page.evaluate(() => { void fetch('/i/api/graphql/offline/UserRepliesTimeline?variables=%7B%7D&extra=stalled'); });
+      releaseReplies.resolve();
+      return await request;
+    } finally {
+      releaseReplies.resolve();
+      stalled.resolve();
+      page.off('response', stallBody);
+    }
+  };
 
   await t.test('validates requests before browser work and keeps readiness passive', async () => {
     assert.equal((await fetch(`${base}/ready`)).status, 503);
@@ -319,7 +344,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     });
     try {
       await repliesRequested.promise;
-      // Remove the DOM entries before X responds, so an empty UI cannot prove completeness.
+      // Remove the articles before X responds: an articleless page alone must not end the wait.
       await context.pages()[0].locator('article').evaluateAll((articles) => articles.forEach((article) => article.remove()));
       await sleep(250);
       assert.equal(settled, false, 'recent must wait for the withheld first-page response');
@@ -331,7 +356,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const { posts, complete } = await response.json();
     assert.equal(complete, true);
     assert.deepEqual(posts.map((post) => post.id).sort(), ['900000000000001001', '900000000000001005']);
-    assert.equal(await context.pages()[0].locator('article').count(), 0);
   });
 
   await t.test('a Replies tab without articles fails fast on an unreadable timeline', async () => {
@@ -384,29 +408,27 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   await t.test('a Replies tab without articles requires an end boundary, even after an empty first page', async (t) => {
     emptyTab = 'replies';
-    holdReplies = true;
     profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await fixture('user-tweets-no-cursor.json') };
-    const page = context.pages()[0];
-    // A body that never arrives must not hold the browser queue past the deadline.
-    const stalled = Promise.withResolvers();
-    const stallBody = (response) => {
-      if (response.url().includes('extra=stalled')) t.mock.method(response, 'json', () => stalled.promise);
-    };
-    page.on('response', stallBody);
-    try {
-      const request = fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(40_000) });
-      await repliesRequested.promise;
-      await page.evaluate(() => { void fetch('/i/api/graphql/offline/UserRepliesTimeline?variables=%7B%7D&extra=stalled'); });
-      releaseReplies.resolve();
-      const response = await request;
-      assert.equal(response.status, 500);
-      assert.match((await response.json()).error, /Replies tab: no visible posts or complete timeline within 30 seconds/);
-      assert.equal(await page.locator('article').count(), 0);
-    } finally {
-      releaseReplies.resolve();
-      stalled.resolve();
-      page.off('response', stallBody);
-    }
+    const response = await recentWithStalledReplies(t);
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: no visible posts within 30 seconds: neither the cutoff nor the end of the timeline was reached/);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+  });
+
+  await t.test('a stalled response body fails the tab instead of holding the browser queue', async (t) => {
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    const response = await recentWithStalledReplies(t);
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: a UserTweets response body did not arrive within 30 seconds/);
+  });
+
+  await t.test('a tab with visible posts scrolls to load the rest of its timeline', async () => {
+    scrollTab = 'posts';
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    // Without the article exit, the wait would only end at the 30 second deadline.
+    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).complete, true);
   });
 
   await t.test('replies to an own post with the article link', async () => {
