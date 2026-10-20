@@ -387,16 +387,59 @@ func TestPollCancellationDuringPostBecomesUncertain(t *testing.T) {
 	}
 }
 
-func TestBeginAttemptSavesBeforeReportingCancellation(t *testing.T) {
-	fixture := newPollTest(t, &pollTestOptions{})
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	entry := state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}
-	testutil.ErrorContains(t, fixture.app.beginAttempt(ctx, fixture.item.GUID, &entry), context.Canceled.Error())
-	// The attempt is on disk, so recovery can mark it uncertain before any retry.
-	saved := reloadPollState(t, fixture).Items[fixture.item.GUID]
-	if saved.Status != state.StatusPosting || saved.Attempts != 2 || saved.PostURL != mainURL {
-		t.Fatalf("saved = %#v", saved)
+func TestPublishRestoresStateWhenStoppedBeforePosterCall(t *testing.T) {
+	for _, tt := range []struct {
+		name        string
+		initial     state.Entry
+		failRestore bool
+	}{
+		{name: "new entry"},
+		{name: "retry", initial: state.Entry{Status: state.StatusRetry, Attempts: 2, NextAttemptAt: testNow.Add(-time.Minute), LinkInPost: true}},
+		{name: "pending reply", initial: state.Entry{Status: state.StatusRetry, Attempts: 1, NextAttemptAt: testNow.Add(-time.Minute), PostURL: mainURL}},
+		{name: "restore save fails", failRestore: true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newReplyTest(t, &pollTestOptions{initial: tt.initial})
+			entry := tt.initial
+			entry.Format = state.FormatImage
+			want := entry
+			if want.Status == "" {
+				want.Status = state.StatusRetry
+			}
+			want.LastError = "stopped before the poster call; nothing was sent"
+			want.UpdatedAt = testNow
+			ctx, cancel := context.WithCancel(t.Context())
+			defer cancel()
+			reads := 0
+			fixture.app.now = func() time.Time {
+				reads++
+				cancel()
+				if reads == 2 && tt.failRestore {
+					blockStateSave(t, fixture.app.cfg.StateFile)
+				}
+				return testNow
+			}
+
+			_, err := fixture.app.publish(ctx, &fixture.item, &entry)
+			wantErr := context.Canceled.Error()
+			if tt.failRestore {
+				wantErr = "save stopped attempt state"
+			}
+			testutil.ErrorContains(t, err, wantErr)
+			fixture.assertCalls(0, 0)
+			testutil.Equal(t, fixture.replyCalls.Load(), 0)
+			saved := reloadPollState(t, fixture)
+			if tt.failRestore {
+				testutil.Equal(t, saved.Items[fixture.item.GUID].Status, state.StatusPosting)
+				testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusPosting)
+				testutil.NoError(t, os.Remove(fixture.app.cfg.StateFile+".tmp"))
+				fixture.app.store = saved
+				testutil.Equal(t, fixture.app.recoverPosting(), true)
+				testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusUncertain)
+				return
+			}
+			testutil.Equal(t, saved.Items[fixture.item.GUID], want)
+		})
 	}
 }
 

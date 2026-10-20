@@ -642,8 +642,7 @@ func (a *app) publishPost(ctx context.Context, item *feed.Item, entry *state.Ent
 			return a.record(item.GUID, entry)
 		}
 
-		entry.LinkInPost = !withReply
-		if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
+		if err := a.beginAttempt(ctx, item.GUID, entry, !withReply); err != nil {
 			closeVideo()
 			return err
 		}
@@ -698,7 +697,7 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 		return nil, a.record(item.GUID, entry)
 	}
 
-	if err := a.beginAttempt(ctx, item.GUID, entry); err != nil {
+	if err := a.beginAttempt(ctx, item.GUID, entry, entry.LinkInPost); err != nil {
 		return nil, err
 	}
 	url, err := a.poster.Reply(ctx, entry.PostURL, text)
@@ -714,15 +713,27 @@ func (a *app) publishReply(ctx context.Context, item *feed.Item, entry *state.En
 }
 
 // beginAttempt saves the attempt before the poster call, so a crash leaves it uncertain rather than unrecorded.
-// It reports cancellation only after the save, so a stop skips the call and the saved attempt is recovered as uncertain.
-func (a *app) beginAttempt(ctx context.Context, guid string, entry *state.Entry) error {
+func (a *app) beginAttempt(ctx context.Context, guid string, entry *state.Entry, linkInPost bool) error {
+	previous := *entry
 	entry.Status = state.StatusPosting
 	entry.Attempts++
 	entry.NextAttemptAt = time.Time{}
+	entry.LinkInPost = linkInPost
 	if err := a.record(guid, entry); err != nil {
 		return fmt.Errorf("save write-ahead state: %w", err)
 	}
-	return ctx.Err()
+	if err := ctx.Err(); err != nil {
+		*entry = previous
+		if entry.Status == "" {
+			entry.Status = state.StatusRetry
+		}
+		entry.LastError = "stopped before the poster call; nothing was sent"
+		if saveErr := a.record(guid, entry); saveErr != nil {
+			return fmt.Errorf("save stopped attempt state: %w", saveErr)
+		}
+		return err
+	}
+	return nil
 }
 
 // scheduleRetry delays the next attempt; only confirmed pre-click failures avoid the uncertain-outcome delay.
