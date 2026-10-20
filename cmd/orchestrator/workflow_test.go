@@ -216,6 +216,31 @@ func TestPollRecoversPersistedPosting(t *testing.T) {
 	fixture.assertCalls(0, 0)
 }
 
+func TestPollHealsFailedRecoverySave(t *testing.T) {
+	now := testNow
+	fixture := newPollTest(t, &pollTestOptions{
+		now:     func() time.Time { return now },
+		initial: state.Entry{Status: state.StatusPosting, Attempts: 1},
+	})
+	testutil.NoError(t, fixture.app.store.Save())
+	blockStateSave(t, fixture.app.cfg.StateFile)
+
+	testutil.ErrorContains(t, fixture.app.poll(t.Context()), "save recovered state")
+	testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusUncertain)
+	testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].Status, state.StatusPosting)
+	fixture.assertCalls(0, 0)
+
+	testutil.NoError(t, os.Remove(fixture.app.cfg.StateFile+".tmp"))
+	fixture.poll()
+	testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].Status, state.StatusPosting)
+	fixture.assertCalls(0, 0)
+
+	now = now.Add(uncertainMinimum)
+	fixture.poll()
+	testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID].Status, state.StatusUncertain)
+	fixture.assertCalls(1, 0)
+}
+
 func TestPollWaitsUntilRetryIsEligible(t *testing.T) {
 	// Both are scheduled two minutes out; an uncertain outcome waits at least five.
 	for _, tt := range []struct {
