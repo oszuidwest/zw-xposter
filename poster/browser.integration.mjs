@@ -185,7 +185,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     const tab = { UserOriginalsTimeline: 'posts', UserRepliesTimeline: 'replies' }[url.pathname.split('/').pop()];
     if (tab) {
-      if (tab === 'replies' && holdReplies) {
+      if (tab === 'replies' && holdReplies && !url.searchParams.has('delayed-error')) {
         repliesRequested.resolve();
         await releaseReplies.promise;
       }
@@ -352,6 +352,47 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(response.status, 500);
     assert.match((await response.json()).error, /Replies tab: UserTweets response has no timeline instructions/);
     assert.equal(await context.pages()[0].locator('article').count(), 0);
+    assert.equal(published.length, before);
+  });
+
+  await t.test('a complete empty Replies response waits for an already received unreadable response', async (t) => {
+    emptyReplies = true;
+    holdReplies = true;
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    const page = context.pages()[0];
+    const reading = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const delayError = (response) => {
+      if (!response.url().includes('delayed-error')) return;
+      t.mock.method(response, 'json', async () => {
+        reading.resolve();
+        await release.promise;
+        throw new Error('delayed unreadable Replies response');
+      });
+    };
+    page.on('response', delayError);
+    let settled = false;
+    const request = fetch(`${base}/recent?hours=1`).then((response) => {
+      settled = true;
+      return response;
+    });
+    const before = published.length;
+    try {
+      await repliesRequested.promise;
+      await page.locator('article').evaluateAll((articles) => articles.forEach((article) => article.remove()));
+      await page.evaluate(() => { void fetch('/i/api/graphql/offline/UserRepliesTimeline?variables=%7B%7D&delayed-error=1'); });
+      await reading.promise;
+      releaseReplies.resolve();
+      await sleep(250);
+      assert.equal(settled, false, 'a complete page must not skip an already received response body');
+    } finally {
+      releaseReplies.resolve();
+      release.resolve();
+      page.off('response', delayError);
+    }
+    const response = await request;
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: delayed unreadable Replies response/);
     assert.equal(published.length, before);
   });
 

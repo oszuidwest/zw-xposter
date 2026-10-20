@@ -626,7 +626,7 @@ async function recentPosts(hours) {
     // An empty tab has no article; its complete first page is enough to proceed.
     const deadline = Date.now() + 30_000;
     for (;;) {
-      if (timeline.complete() || timeline.failed()) return;
+      if (timeline.complete() || timeline.failed()) break;
       if (await page.locator('article').first().isVisible()) break;
       if (Date.now() >= deadline) {
         timeline.fail('no visible posts or complete timeline within 30 seconds');
