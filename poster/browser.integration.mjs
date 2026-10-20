@@ -5,6 +5,7 @@ import { mkdtempDisposable, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async (t) => {
   const cleanup = new AsyncDisposableStack();
@@ -55,6 +56,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let failPagination;
   let profilePages;
   let emptyReplies;
+  let holdReplies;
+  let repliesRequested;
+  let releaseReplies;
   let failVideo;
   let uploadStatus;
   let failCaptions;
@@ -85,6 +89,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failPagination = '';
     profilePages = undefined;
     emptyReplies = false;
+    holdReplies = false;
+    repliesRequested = Promise.withResolvers();
+    releaseReplies = Promise.withResolvers();
     failVideo = false;
     uploadStatus = 200;
     failCaptions = false;
@@ -178,6 +185,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     const tab = { UserOriginalsTimeline: 'posts', UserRepliesTimeline: 'replies' }[url.pathname.split('/').pop()];
     if (tab) {
+      if (tab === 'replies' && holdReplies) {
+        repliesRequested.resolve();
+        await releaseReplies.promise;
+      }
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
       if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
@@ -297,10 +308,25 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     ]);
   });
 
-  await t.test('an empty Replies tab allows publishing the first headline and link reply', async () => {
+  await t.test('a delayed empty Replies response allows publishing the first headline and link reply', async () => {
     emptyReplies = true;
+    holdReplies = true;
     profilePages = { posts: await recentFixture('user-originals-timeline.json') };
-    const response = await fetch(`${base}/recent?hours=1`);
+    let settled = false;
+    const request = fetch(`${base}/recent?hours=1`).then((response) => {
+      settled = true;
+      return response;
+    });
+    try {
+      await repliesRequested.promise;
+      // Remove the DOM entries before X responds, so an empty UI cannot prove completeness.
+      await context.pages()[0].locator('article').evaluateAll((articles) => articles.forEach((article) => article.remove()));
+      await sleep(250);
+      assert.equal(settled, false, 'recent must wait for the withheld first-page response');
+    } finally {
+      releaseReplies.resolve();
+    }
+    const response = await request;
     assert.equal(response.status, 200);
     const { posts, complete } = await response.json();
     assert.equal(complete, true);
@@ -325,6 +351,19 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     const response = await fetch(`${base}/recent?hours=1`);
     assert.equal(response.status, 500);
     assert.match((await response.json()).error, /Replies tab: UserTweets response has no timeline instructions/);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+    assert.equal(published.length, before);
+  });
+
+  await t.test('a Replies tab without articles requires an end boundary, even after an empty first page', async () => {
+    emptyReplies = true;
+    const incomplete = JSON.parse(await fixture('user-tweets-end.json'));
+    incomplete.data.user.result.timeline_v2.timeline.instructions = [{ type: 'TimelineAddEntries', entries: [] }];
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: JSON.stringify(incomplete) };
+    const before = published.length;
+    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(40_000) });
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: no visible posts or complete timeline within 30 seconds/);
     assert.equal(await context.pages()[0].locator('article').count(), 0);
     assert.equal(published.length, before);
   });
