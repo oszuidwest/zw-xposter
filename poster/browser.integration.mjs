@@ -5,6 +5,7 @@ import { mkdtempDisposable, readFile, readdir } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout as sleep } from 'node:timers/promises';
 
 test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async (t) => {
   const cleanup = new AsyncDisposableStack();
@@ -40,6 +41,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
   const context = cleanup.use(await poster.launch());
   const fixture = (name) => readFile(new URL(`../testdata/contract/${name}`, import.meta.url), 'utf8');
+  const recentFixture = async (name) => {
+    const [weekday, day, month, year, time] = new Date(Date.now() - 60_000).toUTCString().replace(',', '').split(' ');
+    return (await fixture(name))
+      .replaceAll(/"created_at": "[^"]+"/g, `"created_at": "${weekday} ${month} ${day} ${time} +0000 ${year}"`);
+  };
   const pageHTML = await fixture('browser-page.html');
   // A fixture edit must not silently disable a swap.
   const swap = (text, from, to) => {
@@ -49,6 +55,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let rejectPost;
   let failPagination;
   let profilePages;
+  let emptyTab;
+  let scrollTab;
+  let holdReplies;
+  let repliesRequested;
+  let releaseReplies;
   let failVideo;
   let uploadStatus;
   let failCaptions;
@@ -78,6 +89,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     rejectPost = false;
     failPagination = '';
     profilePages = undefined;
+    emptyTab = '';
+    scrollTab = '';
+    holdReplies = false;
+    repliesRequested = Promise.withResolvers();
+    releaseReplies = Promise.withResolvers();
     failVideo = false;
     uploadStatus = 200;
     failCaptions = false;
@@ -171,6 +187,10 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     const tab = { UserOriginalsTimeline: 'posts', UserRepliesTimeline: 'replies' }[url.pathname.split('/').pop()];
     if (tab) {
+      if (tab === 'replies' && holdReplies && !url.searchParams.has('extra')) {
+        repliesRequested.resolve();
+        await releaseReplies.promise;
+      }
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
       if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
@@ -178,7 +198,11 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       const firstPage = !continuation && profilePages?.[tab];
       return route.fulfill({
         contentType: 'application/json',
-        headers: firstPage ? { 'x-offline-next': 'true' } : {},
+        headers: {
+          ...(firstPage && { 'x-offline-next': 'true' }),
+          ...(emptyTab === tab && { 'x-offline-empty': 'true' }),
+          ...(scrollTab === tab && { 'x-offline-scroll': 'true' }),
+        },
         body: firstPage || await fixture('user-tweets-end.json'),
       });
     }
@@ -214,6 +238,28 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     body: bytes,
     signal,
   });
+  // Requests /recent and, once the Replies tab loads, adds a Replies response whose body never arrives.
+  // The mock listens before /recent starts, so the server's json() call gets it.
+  const recentWithStalledReplies = async (t) => {
+    holdReplies = true;
+    const page = context.pages()[0];
+    const stalled = Promise.withResolvers();
+    const stallBody = (response) => {
+      if (response.url().includes('extra=stalled')) t.mock.method(response, 'json', () => stalled.promise);
+    };
+    page.on('response', stallBody);
+    try {
+      const request = fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(40_000) });
+      await repliesRequested.promise;
+      await page.evaluate(() => { void fetch('/i/api/graphql/offline/UserRepliesTimeline?variables=%7B%7D&extra=stalled'); });
+      releaseReplies.resolve();
+      return await request;
+    } finally {
+      releaseReplies.resolve();
+      stalled.resolve();
+      page.off('response', stallBody);
+    }
+  };
 
   await t.test('validates requests before browser work and keeps readiness passive', async () => {
     assert.equal((await fetch(`${base}/ready`)).status, 503);
@@ -273,10 +319,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   });
 
   await t.test('combines headline posts from the Posts tab with link replies from the Replies tab', async () => {
-    const [weekday, day, month, year, time] = new Date(Date.now() - 60_000).toUTCString().replace(',', '').split(' ');
-    const recent = async (name) => (await fixture(name))
-      .replaceAll(/"created_at": "[^"]+"/g, `"created_at": "${weekday} ${month} ${day} ${time} +0000 ${year}"`);
-    profilePages = { posts: await recent('user-originals-timeline.json'), replies: await recent('user-replies-timeline.json') };
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await recentFixture('user-replies-timeline.json') };
     const response = await fetch(`${base}/recent?hours=1`);
     assert.equal(response.status, 200);
     const { posts, complete } = await response.json();
@@ -288,6 +331,104 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       ['900000000000001003', [], status('900000000000001002')],
       ['900000000000001005', ['https://example.invalid/articles/fallback'], undefined],
     ]);
+  });
+
+  await t.test('a delayed empty Replies response is waited for and completes the tab', async () => {
+    emptyTab = 'replies';
+    holdReplies = true;
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    let settled = false;
+    const request = fetch(`${base}/recent?hours=1`).then((response) => {
+      settled = true;
+      return response;
+    });
+    try {
+      await repliesRequested.promise;
+      // Remove the articles before X responds: an articleless page alone must not end the wait.
+      await context.pages()[0].locator('article').evaluateAll((articles) => articles.forEach((article) => article.remove()));
+      await sleep(250);
+      assert.equal(settled, false, 'recent must wait for the withheld first-page response');
+    } finally {
+      releaseReplies.resolve();
+    }
+    const response = await request;
+    assert.equal(response.status, 200);
+    const { posts, complete } = await response.json();
+    assert.equal(complete, true);
+    assert.deepEqual(posts.map((post) => post.id).sort(), ['900000000000001001', '900000000000001005']);
+  });
+
+  await t.test('a Replies tab without articles fails fast on an unreadable timeline', async () => {
+    emptyTab = 'replies';
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: JSON.stringify({ data: {} }) };
+    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(10_000) });
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: UserTweets response has no timeline instructions/);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+  });
+
+  await t.test('a complete empty Replies response waits for an already received unreadable response', async (t) => {
+    emptyTab = 'replies';
+    holdReplies = true;
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    const page = context.pages()[0];
+    const reading = Promise.withResolvers();
+    const release = Promise.withResolvers();
+    const delayError = (response) => {
+      if (!response.url().includes('extra=delayed-error')) return;
+      t.mock.method(response, 'json', async () => {
+        reading.resolve();
+        await release.promise;
+        throw new Error('delayed unreadable Replies response');
+      });
+    };
+    page.on('response', delayError);
+    let settled = false;
+    const request = fetch(`${base}/recent?hours=1`).then((response) => {
+      settled = true;
+      return response;
+    });
+    try {
+      await repliesRequested.promise;
+      await page.locator('article').evaluateAll((articles) => articles.forEach((article) => article.remove()));
+      await page.evaluate(() => { void fetch('/i/api/graphql/offline/UserRepliesTimeline?variables=%7B%7D&extra=delayed-error'); });
+      await reading.promise;
+      releaseReplies.resolve();
+      await sleep(250);
+      assert.equal(settled, false, 'a complete page must not skip an already received response body');
+    } finally {
+      releaseReplies.resolve();
+      release.resolve();
+      page.off('response', delayError);
+    }
+    const response = await request;
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: delayed unreadable Replies response/);
+  });
+
+  await t.test('a Replies tab without articles requires an end boundary, even after an empty first page', async (t) => {
+    emptyTab = 'replies';
+    profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await fixture('user-tweets-no-cursor.json') };
+    const response = await recentWithStalledReplies(t);
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: no visible posts within 30 seconds: neither the cutoff nor the end of the timeline was reached/);
+    assert.equal(await context.pages()[0].locator('article').count(), 0);
+  });
+
+  await t.test('a stalled response body fails the tab instead of holding the browser queue', async (t) => {
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    const response = await recentWithStalledReplies(t);
+    assert.equal(response.status, 500);
+    assert.match((await response.json()).error, /Replies tab: a UserTweets response body did not arrive within 30 seconds/);
+  });
+
+  await t.test('a tab with visible posts scrolls to load the rest of its timeline', async () => {
+    scrollTab = 'posts';
+    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
+    // Without the article exit, the wait would only end at the 30 second deadline.
+    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
+    assert.equal(response.status, 200);
+    assert.equal((await response.json()).complete, true);
   });
 
   await t.test('replies to an own post with the article link', async () => {

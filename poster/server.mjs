@@ -623,15 +623,28 @@ async function recentPosts(hours) {
     pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
   };
   const readTab = async (timeline) => {
-    await page.locator('article').first().waitFor();
+    const done = () => timeline.complete() || timeline.failed();
+    // A stalled body must not hold the browser queue; a failed tab needs no more pages.
+    const drain = async () => {
+      if (timeline.failed()) return;
+      if (!await Promise.race([Promise.all(pending).then(() => true), sleep(30_000, false, { ref: false })])) {
+        timeline.fail('a UserTweets response body did not arrive within 30 seconds');
+      }
+    };
+    // An empty tab never shows an article, so a complete or failed timeline also ends the wait.
+    const deadline = Date.now() + 30_000;
+    while (!done() && !(await page.locator('article').first().isVisible())) {
+      if (Date.now() >= deadline) timeline.fail(`no visible posts within 30 seconds: ${timeline.incompleteReason()}`);
+      else await sleep(100);
+    }
     await pause(1500, 3000);
     for (let i = 0; i < 8; i++) {
-      await Promise.all(pending);
-      if (timeline.complete() || timeline.failed()) break;
+      await drain();
+      if (done()) break;
       await page.mouse.wheel(0, random(1500, 2500));
       await pause(1500, 3000);
     }
-    await Promise.all(pending);
+    await drain();
   };
 
   page.on('response', onResponse);
