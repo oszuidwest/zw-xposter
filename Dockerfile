@@ -1,5 +1,5 @@
 # syntax=docker/dockerfile:1
-FROM --platform=$BUILDPLATFORM golang:1.27.2-alpine3.24 AS go-build
+FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS go-build
 WORKDIR /src
 COPY go.mod ./
 COPY cmd/orchestrator/ ./cmd/orchestrator/
