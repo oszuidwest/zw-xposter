@@ -3,6 +3,7 @@ package dedupe
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
@@ -79,4 +80,23 @@ func TestNewerPost(t *testing.T) {
 	testutil.Equal(t, NewerPost("https://x.com/a/status/1010", "https://x.com/a/status/999"), true)
 	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/102"), false)
 	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/101"), false)
+}
+
+func TestPostTime(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		url  string
+		want time.Time
+	}{
+		{name: "X post", url: "https://x.com/TwitterDev/status/1346889436626259968", want: time.Date(2021, time.January, 6, 18, 40, 40, 344000000, time.UTC)},
+		{name: "no status ID", url: "https://x.com/TwitterDev"},
+		{name: "invalid status ID", url: "https://x.com/TwitterDev/status/abc"},
+		{name: "overflow", url: "https://x.com/TwitterDev/status/18446744073709551616"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got, ok := PostTime(tt.url)
+			testutil.Equal(t, ok, !tt.want.IsZero())
+			testutil.Equal(t, got.Equal(tt.want), true)
+		})
+	}
 }

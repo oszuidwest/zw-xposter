@@ -19,6 +19,7 @@ func TestClientRecent(t *testing.T) {
 	tests := []struct {
 		name      string
 		fixture   string
+		body      string
 		lookback  time.Duration
 		hours     string
 		wantErr   bool
@@ -26,6 +27,8 @@ func TestClientRecent(t *testing.T) {
 	}{
 		{name: "complete timeline", fixture: "recent-complete.json", lookback: 24*time.Hour + time.Minute, hours: "25", wantPosts: 2},
 		{name: "incomplete timeline", fixture: "recent-incomplete.json", lookback: 24*time.Hour + time.Minute, hours: "25", wantErr: true},
+		{name: "missing posts", body: `{"complete":true}`, hours: "0", wantErr: true},
+		{name: "null posts", body: `{"posts":null,"complete":true}`, hours: "0", wantErr: true},
 		// Pins the Go side of the limit; browser.integration.mjs pins the poster side.
 		{name: "maximum lookback", lookback: MaxLookback, hours: "336"},
 	}
@@ -34,6 +37,9 @@ func TestClientRecent(t *testing.T) {
 			t.Parallel()
 
 			body := []byte(`{"posts":[],"complete":true}`)
+			if tt.body != "" {
+				body = []byte(tt.body)
+			}
 			if tt.fixture != "" {
 				body = readFixture(t, tt.fixture)
 			}
@@ -49,7 +55,7 @@ func TestClientRecent(t *testing.T) {
 			posts, err := New(server.URL).Recent(t.Context(), tt.lookback)
 			if tt.wantErr {
 				if err == nil {
-					t.Fatal("Recent() error = nil, want an incomplete-timeline error")
+					t.Fatal("Recent() error = nil, want a timeline error")
 				}
 				if posts != nil {
 					t.Errorf("Recent() posts = %#v, want nil", posts)

@@ -354,6 +354,122 @@ func TestPollIncompleteRecentFailsClosed(t *testing.T) {
 	}
 }
 
+// Snowflakes for posts inside the fixture's lookback window.
+const (
+	knownPostURL       = "https://x.invalid/fixture/status/2106338470917046272"
+	knownReplyURL      = "https://x.invalid/fixture/status/2106338470917046273"
+	otherKnownPostURL  = "https://x.invalid/fixture/status/2106338470917046274"
+	otherKnownReplyURL = "https://x.invalid/fixture/status/2106338470917046275"
+)
+
+func TestPollRecentMissingKnownPostsFailsClosed(t *testing.T) {
+	for _, tt := range []struct {
+		name  string
+		entry state.Entry
+		kind  string
+	}{
+		{name: "own post", entry: state.Entry{PostURL: knownPostURL}, kind: "posts"},
+		{name: "link reply", entry: state.Entry{ReplyURL: knownReplyURL}, kind: "link replies"},
+		{name: "old post recent reply", entry: state.Entry{PostURL: mainURL, ReplyURL: knownReplyURL}, kind: "link replies"},
+		{name: "post and reply", entry: state.Entry{PostURL: knownPostURL, ReplyURL: knownReplyURL}, kind: "posts"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{
+				recent: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
+					testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": true})
+				},
+			})
+			tt.entry.Status, tt.entry.PublishedAt = state.StatusPosted, testNow.Add(-72*time.Hour)
+			fixture.app.store.SetAt("posted", &tt.entry, testNow.Add(-time.Hour))
+			fixture.assertPollFailsUnchanged("missing all 1 known "+tt.kind, 1)
+			testutil.Equal(t, fixture.replyCalls.Load(), 0)
+		})
+	}
+}
+
+func TestPollRecentMissingKnownKindFailsClosed(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		seen string
+		want string
+	}{
+		{name: "headlines only", seen: knownPostURL, want: "1 known link replies"},
+		{name: "replies only", seen: knownReplyURL, want: "2 known posts"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newReplyTest(t, &pollTestOptions{
+				initial: state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: knownPostURL},
+				recent:  ownPosts(t, map[string]any{"url": tt.seen}),
+			})
+			published := testNow.Add(-72 * time.Hour)
+			fixture.app.store.SetAt("posted", &state.Entry{Status: state.StatusPosted, PostURL: otherKnownPostURL, ReplyURL: knownReplyURL, PublishedAt: published}, published)
+			fixture.assertPollFailsUnchanged("missing all "+tt.want, 1)
+			testutil.Equal(t, fixture.replyCalls.Load(), 0)
+		})
+	}
+}
+
+func TestPollRecentMissingSomeKnownPostsStillPosts(t *testing.T) {
+	fixture := newPollTest(t, &pollTestOptions{
+		recent: ownPosts(t, map[string]any{"url": "https://x.invalid/renamed/status/2106338470917046272"}, map[string]any{"url": "https://x.invalid/renamed/status/2106338470917046273"}),
+	})
+	published := testNow.Add(-time.Hour)
+	fixture.app.store.SetAt("posted", &state.Entry{Status: state.StatusPosted, PostURL: knownPostURL, ReplyURL: knownReplyURL, PublishedAt: published}, published)
+	fixture.app.store.SetAt("deleted", &state.Entry{Status: state.StatusPosted, PostURL: otherKnownPostURL, ReplyURL: otherKnownReplyURL, PublishedAt: published}, published)
+	entry := fixture.poll()
+	testutil.Equal(t, entry.Status, state.StatusPosted)
+	fixture.assertCalls(1, 1)
+}
+
+func TestPollRecentIgnoresPostsWithoutRecentStatusIDs(t *testing.T) {
+	for _, tt := range []struct {
+		name string
+		url  string
+	}{
+		{name: "old post", url: mainURL},
+		{name: "no status ID", url: "https://x.invalid/fixture"},
+		{name: "invalid status ID", url: "https://x.invalid/fixture/status/abc"},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			fixture := newPollTest(t, &pollTestOptions{})
+			fixture.app.store.SetAt("old", &state.Entry{Status: state.StatusPosted, PostURL: tt.url, ReplyURL: tt.url, PublishedAt: testNow.Add(-time.Hour)}, testNow)
+			entry := fixture.poll()
+			testutil.Equal(t, entry.Status, state.StatusPosted)
+			fixture.assertCalls(1, 1)
+		})
+	}
+}
+
+func TestPollRecentReconciledPostLeavesLookback(t *testing.T) {
+	var clock atomic.Int64
+	clock.Store(testNow.UnixNano())
+	now := func() time.Time { return time.Unix(0, clock.Load()).UTC() }
+	fixture := newPollTest(t, &pollTestOptions{
+		now: now,
+		recent: func(w http.ResponseWriter, _ *http.Request, item feed.Item) {
+			posts := []any{}
+			if now().Sub(testNow.Add(-47*time.Hour)) <= 48*time.Hour {
+				posts = append(posts, map[string]any{
+					"url": "https://x.invalid/fixture/status/2105643894174646272", "urls": []string{item.Link},
+					"createdAt": testNow.Add(-47 * time.Hour).Format(time.RFC3339),
+				})
+			}
+			testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": posts, "complete": true})
+		},
+	})
+	entry := fixture.poll()
+	testutil.Equal(t, entry.FoundOnX, true)
+	testutil.Equal(t, entry.PostURL, "https://x.invalid/fixture/status/2105643894174646272")
+	fixture.assertCalls(1, 0)
+
+	clock.Store(testNow.Add(24 * time.Hour).UnixNano())
+	fixture.items = append(fixture.items, feed.Item{GUID: "guid-2", Title: "Fresh article", Link: fixture.item.Link + "-fresh", Published: now().Add(-time.Hour)})
+	fixture.poll()
+	testutil.Equal(t, fixture.app.store.Items["guid-2"].Status, state.StatusPosted)
+	testutil.Equal(t, fixture.recentHours.Load(), 48)
+	fixture.assertCalls(2, 1)
+}
+
 func TestPingHeartbeat(t *testing.T) {
 	var calls atomic.Int32
 	server := testutil.Server(t, func(w http.ResponseWriter, r *http.Request) {

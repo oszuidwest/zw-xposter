@@ -201,6 +201,9 @@ func (c *Client) Recent(ctx context.Context, lookback time.Duration) ([]Post, er
 	if !out.Complete {
 		return nil, errors.New("poster returned an incomplete recent-post timeline")
 	}
+	if out.Posts == nil {
+		return nil, errors.New("poster returned a recent-post timeline without posts")
+	}
 	return out.Posts, nil
 }
 

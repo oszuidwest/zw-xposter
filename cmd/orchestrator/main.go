@@ -406,7 +406,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 
 	if !workflow.recentLoaded {
 		// Only a complete timeline can rule out duplicates.
-		recent, err := a.poster.Recent(ctx, workflow.lookback)
+		recent, err := a.recentPosts(ctx, workflow)
 		if err != nil {
 			return fmt.Errorf("check X for existing posts: %w", err)
 		}
@@ -456,6 +456,34 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	workflow.attempted = true
 	return nil
+}
+
+// Posts and replies use different response shapes, so each kind needs a known match.
+func (a *app) recentPosts(ctx context.Context, workflow *pollState) ([]poster.Post, error) {
+	recent, err := a.poster.Recent(ctx, workflow.lookback)
+	if err != nil {
+		return nil, err
+	}
+	for kind, name := range []string{"posts", "link replies"} {
+		missing := 0
+		for guid := range a.store.Items {
+			saved := a.store.Items[guid]
+			url := []string{saved.PostURL, saved.ReplyURL}[kind]
+			postedAt, ok := dedupe.PostTime(url)
+			if !ok || postedAt.Before(workflow.now.Add(-workflow.lookback)) {
+				continue
+			}
+			if slices.ContainsFunc(recent, func(post poster.Post) bool { return dedupe.SamePost(url, post.URL) }) {
+				missing = 0
+				break
+			}
+			missing++
+		}
+		if missing > 0 {
+			return nil, fmt.Errorf("timeline is missing all %d known %s", missing, name)
+		}
+	}
+	return recent, nil
 }
 
 // pendingPost returns the GUID of another unfinished entry whose headline for this article is or
