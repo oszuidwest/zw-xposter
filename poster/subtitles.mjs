@@ -1,3 +1,5 @@
+import { Blob } from 'node:buffer';
+import { randomUUID } from 'node:crypto';
 import { openAsBlob } from 'node:fs';
 import { TextDecoder } from 'node:util';
 
@@ -49,11 +51,17 @@ export async function generateSubtitles(videoFile, {
     format: 'srt', include_speakers: false, max_characters_per_line: 42,
     max_segment_chars: 84, max_segment_duration_s: 6,
   }]));
-  // Stream from disk to keep the MP4 out of the JS heap.
-  form.set('file', await openAsBlob(videoFile, { type: 'video/mp4' }), 'video.mp4');
+  const boundary = `----${randomUUID()}`;
+  // A composite Blob streams from disk without undici's unobserved FormData pump.
+  const body = new Blob([
+    ...Array.from(form, ([name, value]) => `--${boundary}\r\nContent-Disposition: form-data; name="${name}"\r\n\r\n${value}\r\n`),
+    `--${boundary}\r\nContent-Disposition: form-data; name="file"; filename="video.mp4"\r\nContent-Type: video/mp4\r\n\r\n`,
+    await openAsBlob(videoFile),
+    `\r\n--${boundary}--\r\n`,
+  ], { type: `multipart/form-data; boundary=${boundary}` });
   const timeout = AbortSignal.timeout(timeoutMs);
   const response = await fetch('https://api.elevenlabs.io/v1/speech-to-text', {
-    method: 'POST', headers: { 'xi-api-key': apiKey }, body: form, redirect: 'error',
+    method: 'POST', headers: { 'xi-api-key': apiKey }, body, redirect: 'error',
     signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
   });
   if (!response.ok) {

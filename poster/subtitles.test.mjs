@@ -5,6 +5,7 @@ import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
+import { setTimeout } from 'node:timers/promises';
 import { generateSubtitles, prepareSubtitles } from './subtitles.mjs';
 
 const srt = '1\n00:00:01,200 --> 00:00:03,400\nNieuws uit café West.\n\n';
@@ -26,6 +27,24 @@ async function stallFetch(t) {
   t.mock.method(globalThis, 'fetch', (url, options) => realFetch(`http://127.0.0.1:${server.address().port}`, options));
   return { received: received.promise };
 }
+
+test('aborted uploads leave no unhandled rejections', async (t) => {
+  await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'aborted-subtitles-'));
+  const file = path.join(directory.path, 'video.mp4');
+  await writeFile(file, Buffer.alloc(2 * 1024 * 1024));
+  await stallFetch(t);
+  const rejections = [];
+  const onRejection = (error) => rejections.push(error);
+  process.on('unhandledRejection', onRejection);
+  t.after(() => process.off('unhandledRejection', onRejection));
+  for (let i = 0; i < 200; i++) {
+    const result = await prepareSubtitles(file, { apiKey: 'key', timeoutMs: 50 });
+    assert.equal(result.captions, 'none');
+    assert.match(result.fallbackReason, /TimeoutError|timeout/i);
+  }
+  await setTimeout(1000);
+  assert.deepEqual(rejections, []);
+});
 
 test('optional captions downgrade failures but preserve caller cancellation', async (t) => {
   await using directory = await mkdtempDisposable(path.join(os.tmpdir(), 'optional-subtitles-'));
@@ -76,8 +95,10 @@ test('generates subtitles and rejects unusable transcripts', async (t) => {
         assert.equal(method, 'POST');
         assert.equal(headers['xi-api-key'], 'test-key');
         assert.equal(redirect, 'error');
-        const { file: upload, additional_formats: formats, ...settings } = Object.fromEntries(body);
+        const { file: upload, additional_formats: formats, ...settings } = Object.fromEntries(await new globalThis.Response(body).formData());
         assert.equal(await upload.text(), 'MP4 fixture');
+        assert.equal(upload.name, 'video.mp4');
+        assert.equal(upload.type, 'video/mp4');
         assert.deepEqual(settings, {
           model_id: 'scribe_v2', language_code: 'nld', tag_audio_events: 'false',
           diarize: 'true', timestamps_granularity: 'word',
