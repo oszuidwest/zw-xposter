@@ -50,6 +50,8 @@ for (const [name, page, complete, ids, urls] of [
   ['a tweet nested in a retweet is ignored', () => nestedPage(true), false, []],
   ['an empty page with a replaced Bottom cursor reaches the end',
     () => fixture('user-tweets-end.json'), true, []],
+  ['an empty Replies tab as captured from X reaches the end',
+    () => fixture('user-replies-empty.json'), true, []],
   ['a Bottom terminate instruction reaches the end',
     () => timeline({ type: 'TimelineTerminateTimeline', direction: 'Bottom' }), true, []],
   ['a page without a cursor or terminate instruction is incomplete',
