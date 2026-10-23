@@ -555,6 +555,10 @@ const uncertainExpired = "retry window expired while the outcome was uncertain"
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
 	// An expiring entry without a post of its own points to another entry whose headline is or may be on X.
 	sibling := a.siblingNote(guid, entry.Link)
+	previousError := entry.LastError
+	if previousError != "" {
+		previousError = ": " + previousError
+	}
 	switch {
 	case entry.Status == "": // not in state yet
 		entry.Status = state.StatusMissed
@@ -562,19 +566,11 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 		slog.Error("article became too old before it could be posted", "title", entry.Title, "published_at", entry.PublishedAt, "last_error", entry.LastError)
 	case entry.PostURL != "":
 		entry.Status = state.StatusFailedTerminal
-		previousError := entry.LastError
-		entry.LastError = "the post is on X, but its link reply may be missing; check it and add the article link manually"
-		if previousError != "" {
-			entry.LastError += ": " + previousError
-		}
+		entry.LastError = "the post is on X, but its link reply may be missing; check it and add the article link manually" + previousError
 		slog.Error("retry window expired before the link reply was confirmed; the article link must be added manually", "title", entry.Title, "post", entry.PostURL, "attempts", entry.Attempts, "last_error", entry.LastError)
 	case entry.Status == state.StatusUncertain:
 		entry.Status = state.StatusFailedTerminal
-		previousError := entry.LastError
-		entry.LastError = uncertainExpired + "; the post may already be on X and must be checked manually"
-		if previousError != "" {
-			entry.LastError += ": " + previousError
-		}
+		entry.LastError = uncertainExpired + "; the post may already be on X and must be checked manually" + previousError
 		if sibling != "" {
 			entry.LastError += "; " + sibling
 		}

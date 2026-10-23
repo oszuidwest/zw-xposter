@@ -284,19 +284,6 @@ func TestPollWaitsUntilRetryIsEligible(t *testing.T) {
 	}
 }
 
-func TestPollDeduplicatesDifferentGUIDsForSameArticle(t *testing.T) {
-	fixture := newPollTest(t, &pollTestOptions{
-		extra: []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow}},
-	})
-	fixture.poll()
-	saved := reloadPollState(t, fixture)
-	first, second := saved.Items["guid-1"], saved.Items["guid-2"]
-	if fixture.postCalls.Load() != 1 || first.Status != state.StatusPosted || second.Status != state.StatusPosted ||
-		!second.FoundOnX || first.PostURL != second.PostURL {
-		t.Fatalf("posts=%d, first=%#v, second=%#v", fixture.postCalls.Load(), first, second)
-	}
-}
-
 func TestPollReconcilesAfterOutcomeSaveFails(t *testing.T) {
 	now := testNow
 	var fixture *pollTest

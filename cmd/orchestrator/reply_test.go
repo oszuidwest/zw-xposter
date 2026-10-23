@@ -226,7 +226,7 @@ func TestPollExpiredReplyAsksForManualLink(t *testing.T) {
 		initial:   state.Entry{Status: state.StatusRetry, Attempts: 3, PostURL: mainURL, LastError: "link reply: synthetic"},
 	})
 	entry := fixture.poll()
-	if entry.Status != state.StatusFailedTerminal || !strings.Contains(entry.LastError, "add the article link manually") {
+	if entry.Status != state.StatusFailedTerminal || entry.LastError != "the post is on X, but its link reply may be missing; check it and add the article link manually: link reply: synthetic" {
 		t.Fatalf("entry = %#v", entry)
 	}
 	event, ok := workflowAlert(fixture.item.GUID, &state.Entry{Status: state.StatusRetry}, &entry)
@@ -262,9 +262,10 @@ func TestPollDryRunPredictsReplyWithoutPosting(t *testing.T) {
 	}
 }
 
-// addArticleEntry stores another feed entry, for the fixture's article unless entry has a link.
+// addArticleEntry stores another feed entry, for the fixture's article with a tracking query unless
+// entry has a link, so siblings must match by dedupe.SameLink.
 func addArticleEntry(fixture *pollTest, guid string, entry *state.Entry) {
-	entry.Link = cmp.Or(entry.Link, fixture.item.Link)
+	entry.Link = cmp.Or(entry.Link, fixture.item.Link+"/?utm_source=x")
 	if entry.PublishedAt.IsZero() {
 		entry.PublishedAt = testNow
 	}
@@ -273,27 +274,40 @@ func addArticleEntry(fixture *pollTest, guid string, entry *state.Entry) {
 
 func TestPollOtherGUIDWaitsWhileAHeadlineIsKnown(t *testing.T) {
 	for _, tt := range []struct {
-		name  string
-		owner state.Entry
-		wait  bool
+		name               string
+		owner              state.Entry
+		wait, disableReply bool
 	}{
-		{"owner awaiting its reply", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}, true},
+		{"owner awaiting its reply", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL}, true, false},
 		// Its lost response may hide a headline already on X.
-		{"uncertain owner without a post", state.Entry{Status: state.StatusUncertain, Attempts: 1}, true},
+		{"uncertain owner without a post", state.Entry{Status: state.StatusUncertain, Attempts: 1}, true, false},
 		// The owner's alert asks for its link to be added by hand.
-		{"expired owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, PostURL: mainURL}, true},
+		{"expired owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, PostURL: mainURL}, true, false},
 		// The timeline does not show the owner's reply yet.
-		{"posted owner", state.Entry{Status: state.StatusPosted, Attempts: 1, PostURL: mainURL, ReplyURL: replyURL}, true},
+		{"posted owner", state.Entry{Status: state.StatusPosted, Attempts: 1, PostURL: mainURL, ReplyURL: replyURL}, true, false},
 		// The error text of earlier releases still marks an expired uncertain headline.
-		{"expired uncertain owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, LastError: "retry window expired while the outcome was uncertain; checked manually"}, true},
-		{"owner that never reached X", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, LastError: "image upload failed"}, false},
-		{"other article", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL, Link: "https://example.invalid/other"}, false},
+		{"expired uncertain owner", state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, LastError: "retry window expired while the outcome was uncertain; checked manually"}, true, false},
+		{"owner that never reached X", state.Entry{Status: state.StatusFailedTerminal, Attempts: 3, LastError: "image upload failed"}, false, false},
+		{"other article", state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: mainURL, Link: "https://example.invalid/other"}, false, false},
+		{"link in the post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage, LinkInPost: true}, false, true},
+		{"text post saved before link_in_post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatText}, false, true},
+		{"expired text post", state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, Format: state.FormatText,
+			LastError: uncertainExpired + "; the post may already be on X and must be checked manually"}, false, true},
+		// A headline-only attempt still holds the article back after LINK_IN_REPLY is switched off.
+		{"headline-only attempt under another setting", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage}, true, true},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newReplyTest(t, &pollTestOptions{})
+			reply, replies := replyURL, int32(1)
+			if tt.disableReply {
+				fixture.app.cfg.LinkInReply = false
+				reply, replies = "", 0
+			}
 			addArticleEntry(fixture, "guid-0", &tt.owner)
-			entry := fixture.poll()
+			assertMails(t, pollMails(t, fixture))
+			entry := fixture.app.store.Items[fixture.item.GUID]
 			if tt.wait {
+				testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &state.Entry{Link: fixture.item.Link}), "guid-0")
 				if entry.Status != "" {
 					t.Fatalf("entry must wait: %#v", entry)
 				}
@@ -301,11 +315,11 @@ func TestPollOtherGUIDWaitsWhileAHeadlineIsKnown(t *testing.T) {
 				testutil.Equal(t, fixture.replyCalls.Load(), 0)
 				return
 			}
-			if entry.Status != state.StatusPosted || entry.PostURL != mainURL || entry.ReplyURL != replyURL || entry.FoundOnX {
+			if entry.Status != state.StatusPosted || entry.PostURL != mainURL || entry.ReplyURL != reply || entry.FoundOnX {
 				t.Fatalf("entry must publish normally: %#v", entry)
 			}
 			fixture.assertCalls(1, 1)
-			testutil.Equal(t, fixture.replyCalls.Load(), 1)
+			testutil.Equal(t, fixture.replyCalls.Load(), replies)
 		})
 	}
 }
@@ -337,16 +351,20 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 		name          string
 		first, second state.Entry
 		posts         int32
+		replyTo       string
+		content       http.HandlerFunc
 	}{
 		// Neither has a post on X, so the first publishes and the second finds its link reply.
-		{"no posts yet", state.Entry{Status: state.StatusRetry, Attempts: 1}, state.Entry{Status: state.StatusRetry, Attempts: 1}, 1},
+		{"no posts yet", state.Entry{Status: state.StatusRetry, Attempts: 1}, state.Entry{Status: state.StatusRetry, Attempts: 1}, 1, mainURL, nil},
 		// An entry with its own post replies under it instead of waiting; the other entry's reply retry is not due yet.
-		{"own post", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: otherPost, NextAttemptAt: testNow.Add(time.Hour)}, 0},
+		{"own post", state.Entry{Status: state.StatusRetry, Attempts: 1, Format: state.FormatImage, PostURL: mainURL}, state.Entry{Status: state.StatusRetry, Attempts: 1, PostURL: otherPost, NextAttemptAt: testNow.Add(time.Hour)}, 0, mainURL, nil},
+		{"link in post", state.Entry{}, state.Entry{}, 1, "", func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte("<html></html>")) }},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			var inReplyTo []string
 			fixture := newReplyTest(t, &pollTestOptions{
 				initial: tt.first,
+				content: tt.content,
 				extra:   []feed.Item{{GUID: "guid-2", Title: "Same article", Link: "/article", Published: testNow}},
 				reply: func(w http.ResponseWriter, r *http.Request, _ feed.Item) {
 					parent, _ := decodePayload(t, r)["inReplyTo"].(string)
@@ -354,13 +372,19 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 					testutil.JSON(t, w, http.StatusOK, map[string]any{"url": replyURL})
 				},
 			})
-			addArticleEntry(fixture, "guid-2", &tt.second)
+			fixture.app.cfg.LinkInReply = tt.replyTo != ""
+			if tt.second.Status != "" {
+				addArticleEntry(fixture, "guid-2", &tt.second)
+			}
 
 			fixture.poll()
 			fixture.assertCalls(1, tt.posts)
-			// Exactly one reply, under the first entry's post.
-			testutil.Equal(t, strings.Join(inReplyTo, " "), mainURL)
-			testutil.Equal(t, fixture.app.store.Items["guid-1"].Status, state.StatusPosted)
+			testutil.Equal(t, strings.Join(inReplyTo, " "), tt.replyTo)
+			saved := reloadPollState(t, fixture)
+			first, second := saved.Items["guid-1"], saved.Items["guid-2"]
+			if first.Status != state.StatusPosted || tt.posts > 0 && (second.Status != state.StatusPosted || !second.FoundOnX || first.PostURL != second.PostURL) {
+				t.Fatalf("first=%#v, second=%#v", first, second)
+			}
 		})
 	}
 }
@@ -368,10 +392,7 @@ func TestPollSameArticleEntriesNeverWaitOnEachOther(t *testing.T) {
 func TestPendingPostNeverMakesUncertainEntriesWait(t *testing.T) {
 	fixture := newReplyTest(t, &pollTestOptions{})
 	addArticleEntry(fixture, "guid-0", &state.Entry{Status: state.StatusUncertain, Attempts: 1})
-	entry := state.Entry{Status: state.StatusRetry, Attempts: 1, Link: fixture.item.Link}
-	testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &entry), "guid-0")
-	// An uncertain entry is reconciled by its own link and must never wait, or two could wait on each other.
-	entry.Status = state.StatusUncertain
+	entry := state.Entry{Status: state.StatusUncertain, Attempts: 1, Link: fixture.item.Link}
 	testutil.Equal(t, fixture.app.pendingPost(fixture.item.GUID, &entry), "")
 }
 
@@ -464,29 +485,6 @@ func TestPollExpiredEntryPointsToSiblingHeadline(t *testing.T) {
 			testutil.Equal(t, entry.Status, tt.status)
 			testutil.Equal(t, entry.LastError, tt.wantErr)
 			fixture.assertCalls(0, 0)
-		})
-	}
-}
-
-func TestPollEarlierAttemptWithLinkInPostHoldsNothingBack(t *testing.T) {
-	for _, tt := range []struct {
-		name  string
-		owner state.Entry
-		posts int32
-	}{
-		// The earlier attempt carried the link, so the complete X check already shows it is not on X.
-		{"link in the post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage, LinkInPost: true}, 1},
-		{"text post saved before link_in_post", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatText}, 1},
-		{"expired text post", state.Entry{Status: state.StatusFailedTerminal, Attempts: 1, Format: state.FormatText,
-			LastError: uncertainExpired + "; the post may already be on X and must be checked manually"}, 1},
-		// A headline-only attempt still holds the article back after LINK_IN_REPLY is switched off.
-		{"headline-only attempt under another setting", state.Entry{Status: state.StatusUncertain, Attempts: 1, Format: state.FormatImage}, 0},
-	} {
-		t.Run(tt.name, func(t *testing.T) {
-			fixture := newPollTest(t, &pollTestOptions{content: fallbackContent})
-			addArticleEntry(fixture, "guid-0", &tt.owner)
-			assertMails(t, pollMails(t, fixture))
-			fixture.assertCalls(1, tt.posts)
 		})
 	}
 }
