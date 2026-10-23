@@ -205,7 +205,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
           ...(firstPage && { 'x-offline-next': 'true' }),
           ...(emptyTab === tab && { 'x-offline-empty': 'true' }),
         },
-        body: firstPage || await fixture('user-tweets-end.json'),
+        body: firstPage || await fixture(emptyTab === tab ? 'user-replies-empty.json' : 'user-tweets-end.json'),
       });
     }
     if (['/home', '/fixture_account', '/fixture_account/with_replies'].includes(url.pathname) || /^\/fixture_account\/status\/\d+$/.test(url.pathname)) {
