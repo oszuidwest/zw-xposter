@@ -630,7 +630,7 @@ async function recentPosts(hours) {
     posts: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
     replies: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
   };
-  const pending = new Set();
+  let pending = 0;
   const inFlight = new Set();
   let requestsStarted = 0;
   const onRequest = (request) => {
@@ -648,16 +648,15 @@ async function recentPosts(hours) {
       return;
     }
     const firstPage = isFirstUserTweetsPage(r.url());
-    const read = r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message));
-    pending.add(read);
-    read.finally(() => pending.delete(read));
+    pending++;
+    r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)).finally(() => pending--);
   };
   const finishRequests = async (timeline) => {
     if (timeline.failed()) return;
     const deadline = Date.now() + 30_000;
-    while (inFlight.size || pending.size) {
+    while (inFlight.size || pending) {
       if (Date.now() >= deadline) {
-        timeline.fail(pending.size
+        timeline.fail(pending
           ? 'a UserTweets response body did not arrive within 30 seconds'
           : 'a UserTweets request did not finish within 30 seconds');
         return;
