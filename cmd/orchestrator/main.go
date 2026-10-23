@@ -292,7 +292,8 @@ func (a *app) replay(ctx context.Context, guid string) error {
 	return nil
 }
 
-// recoverPosting marks attempts left unfinished by crashes or failed saves as uncertain.
+// recoverPosting marks unfinished attempts uncertain; a failed save is not retried by the next poll.
+// Memory stays uncertain and restarts recover posting again; a later successful record saves the whole store.
 func (a *app) recoverPosting() bool {
 	changed := false
 	now := a.now()
