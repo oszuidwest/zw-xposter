@@ -137,10 +137,11 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	if _, err := f.Write(data); err != nil {
-		return closeAfter(f, err)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
 	}
-	if err := closeAfter(f, f.Sync()); err != nil {
+	if err := errors.Join(err, f.Close()); err != nil {
 		return err
 	}
 	if err := os.Rename(tmp, s.path); err != nil {
@@ -150,13 +151,5 @@ func (s *Store) Save() error {
 	if err != nil {
 		return err
 	}
-	return closeAfter(d, d.Sync())
-}
-
-// closeAfter closes f and returns err, or the close error if err is nil.
-func closeAfter(f *os.File, err error) error {
-	if closeErr := f.Close(); err == nil {
-		err = closeErr
-	}
-	return err
+	return errors.Join(d.Sync(), d.Close())
 }
