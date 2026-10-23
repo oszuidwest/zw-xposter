@@ -291,7 +291,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   await t.test('serializes simultaneous posts and returns confirmed URLs', async () => {
     const before = published.length;
-    const responses = await Promise.all([post('First'), post('Second')]);
+    const responses = await Promise.all([post('First'), post('Second', undefined, image)]);
     for (const response of responses) {
       assert.equal(response.status, 200);
       assert.equal((await response.json()).url, 'https://x.com/fixture_account/status/900000000000000601');
@@ -299,17 +299,18 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published.slice(before).sort(), ['First', 'Second']);
   });
 
-  for (const video of [false, true]) await t.test(`cancelled ${video ? 'captions' : 'text'} never publishes`, async () => {
-    holdCaptionSelection = video;
-    holdPostButton = !video;
+  for (const phase of ['text', 'captions', 'deferred caption upload']) await t.test(`cancelled ${phase} never publishes`, async () => {
+    holdCaptionSelection = phase === 'captions';
+    holdPostButton = phase === 'text';
     videoProcessing.resolve();
     const before = [...published];
     const controller = new AbortController();
-    const response = video ? postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal)
-      : post('Cancelled', controller.signal);
+    const response = phase === 'text' ? post('Cancelled', controller.signal)
+      : postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal);
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
-    await (video ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
+    if (phase === 'deferred caption upload') await captionsRequested.promise;
+    else await (phase === 'captions' ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
     // A cancel closes the server's tab; the disabled Post button would otherwise hide a missed text cancel.
     const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
     controller.abort();
@@ -324,7 +325,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   await t.test('combines headline posts from the Posts tab with link replies from the Replies tab', async () => {
     profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await recentFixture('user-replies-timeline.json') };
-    const response = await fetch(`${base}/recent?hours=1`);
+    // Without the article exit, the wait would only end at the 30 second deadline.
+    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
     assert.equal(response.status, 200);
     const { posts, complete } = await response.json();
     assert.equal(complete, true);
@@ -426,14 +428,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.match((await response.json()).error, /Replies tab: a UserTweets response body did not arrive within 30 seconds/);
   });
 
-  await t.test('a tab with visible posts scrolls to load the rest of its timeline', async () => {
-    profilePages = { posts: await recentFixture('user-originals-timeline.json') };
-    // Without the article exit, the wait would only end at the 30 second deadline.
-    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
-    assert.equal(response.status, 200);
-    assert.equal((await response.json()).complete, true);
-  });
-
   for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
     await t.test(`a slow continuation in the ${name} tab still completes recent history`, async (t) => {
       slowContinuation = tab;
@@ -530,22 +524,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published, before, 'no automatic second publication request after a click');
   });
 
-  await t.test('cancelling the deferred caption upload prevents CreateTweet', async () => {
-    videoProcessing.resolve();
-    const before = [...published];
-    const controller = new AbortController();
-    const response = postVideo('Cancelled upload', Buffer.from('synthetic MP4'), controller.signal);
-    const aborted = assert.rejects(response, { name: 'AbortError' });
-    await captionsRequested.promise;
-    // Release the upload only after the cancel has closed the server's tab.
-    const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
-    controller.abort();
-    await Promise.all([aborted, closed]);
-    captionsAccepted.resolve();
-    assert.equal((await fetch(`${base}/recent?hours=1`)).status, 200);
-    assert.deepEqual(published, before);
-  });
-
   for (const status of [403, 408, 429, 500, 502, 503]) await t.test(`a deferred caption HTTP ${status} preserves the caption format`, async () => {
     captionStatus = status;
     videoProcessing.resolve();
@@ -610,12 +588,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(result.clicked, false);
     failImage = false;
     assert.equal((await post('Text fallback')).status, 200);
-  });
-
-  await t.test('image success waits for the upload response', async () => {
-    const response = await post('Image success', undefined, image);
-    assert.equal(response.status, 200);
-    assert.match((await response.json()).url, /\/status\//);
   });
 
   await t.test('upload account restrictions do not authorize fallback', async () => {
