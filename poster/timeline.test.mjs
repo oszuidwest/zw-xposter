@@ -308,6 +308,9 @@ for (const [name, ownId, change] of [
   ['a handle with a path beside its own user ID', account.ownId, (post) => {
     post.core.user_results.result.core.screen_name = 'fixture_account/status/1';
   }],
+  ['a sixteen-character handle beside its own user ID', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 'fixture_account1';
+  }],
   ['an empty user ID beside its own handle', account.ownId, (post) => {
     post.legacy.user_id_str = '';
   }],
