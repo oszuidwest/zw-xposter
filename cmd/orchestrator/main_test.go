@@ -839,6 +839,9 @@ func TestWorkflowAlertOnlyOnTerminalTransition(t *testing.T) {
 			if got != tt.want {
 				t.Fatalf("workflowAlert() = %v, want %v", got, tt.want)
 			}
+			if got && strings.Contains(event.Details, "\nError: ") != (tt.current.LastError != "") {
+				t.Errorf("event details = %q, want the error only when there is one", event.Details)
+			}
 			if got && event.Key != "workflow:"+tt.current.Status+":guid-1" {
 				t.Errorf("event key = %q", event.Key)
 			}
@@ -878,8 +881,15 @@ func TestRecordClearsScheduleOnlyForFinalStatus(t *testing.T) {
 	}
 }
 
-func TestSeedPersistsCurrentFeedWithoutPosting(t *testing.T) {
+func TestSeedPersistsOnlyAfterSaveSucceeds(t *testing.T) {
 	fixture := newPollTest(t, &pollTestOptions{})
+
+	blockStateSave(t, fixture.app.cfg.StateFile)
+	testutil.ErrorContains(t, fixture.app.seed(t.Context()), fixture.app.cfg.StateFile+".tmp")
+	if reloadPollState(t, fixture).Exists() {
+		t.Fatal("failed seed persisted state")
+	}
+	testutil.NoError(t, os.Remove(fixture.app.cfg.StateFile+".tmp"))
 
 	testutil.NoError(t, fixture.app.seed(t.Context()))
 	entry := fixture.app.store.Items[fixture.item.GUID]

@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -29,8 +30,7 @@ func TestClientRecent(t *testing.T) {
 		{name: "incomplete timeline", fixture: "recent-incomplete.json", lookback: 24*time.Hour + time.Minute, hours: "25", wantErr: true},
 		{name: "missing posts", body: `{"complete":true}`, hours: "0", wantErr: true},
 		{name: "null posts", body: `{"posts":null,"complete":true}`, hours: "0", wantErr: true},
-		// Pins the Go side of the limit; browser.integration.mjs pins the poster side.
-		{name: "maximum lookback", lookback: MaxLookback, hours: "336"},
+		{name: "maximum lookback", lookback: MaxLookback, hours: strconv.Itoa(MaxLookbackHours)},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
