@@ -958,28 +958,42 @@ func TestReplayRejectsWithoutChangingState(t *testing.T) {
 }
 
 func TestPollIsolatesReplayBeyondPosterLookback(t *testing.T) {
-	old := feed.Item{
-		GUID:      "guid-old-replay",
-		Title:     "Old replay",
-		Link:      "/old",
-		Published: testNow.Add(-poster.MaxLookback - time.Minute),
-	}
-	fixture := newPollTest(t, &pollTestOptions{extra: []feed.Item{old}})
-	fixture.app.store.SetAt(old.GUID, &state.Entry{
-		Title:             old.Title,
-		Status:            state.StatusRetry,
-		ReplayRequestedAt: testNow.Add(-time.Hour),
-	}, testNow.Add(-time.Hour))
+	for _, tt := range []struct {
+		name     string
+		status   string
+		headline bool
+	}{
+		{"retry", state.StatusRetry, false},
+		// A replayed attempt whose outcome was lost still holds the article back for other entries.
+		{"uncertain", state.StatusUncertain, true},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			old := feed.Item{
+				GUID:      "guid-old-replay",
+				Title:     "Old replay",
+				Link:      "/old",
+				Published: testNow.Add(-poster.MaxLookback - time.Minute),
+			}
+			fixture := newPollTest(t, &pollTestOptions{extra: []feed.Item{old}})
+			fixture.app.store.SetAt(old.GUID, &state.Entry{
+				Title:             old.Title,
+				Status:            tt.status,
+				Attempts:          1,
+				ReplayRequestedAt: testNow.Add(-time.Hour),
+			}, testNow.Add(-time.Hour))
 
-	fixture.poll()
-	oldEntry := fixture.app.store.Items[old.GUID]
-	if oldEntry.Status != state.StatusFailedTerminal || !strings.Contains(oldEntry.LastError, maxLookbackHours) {
-		t.Errorf("old replay entry = %#v, want failed_terminal with lookback error", oldEntry)
+			fixture.poll()
+			oldEntry := fixture.app.store.Items[old.GUID]
+			if oldEntry.Status != state.StatusFailedTerminal || !strings.Contains(oldEntry.LastError, maxLookbackHours) {
+				t.Errorf("old replay entry = %#v, want failed_terminal with lookback error", oldEntry)
+			}
+			testutil.Equal(t, headlineOnX(&oldEntry), tt.headline)
+			testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusPosted)
+			fixture.assertCalls(1, 1)
+			// The uncheckable replay must not widen the check for the other items.
+			testutil.Equal(t, fixture.recentHours.Load(), int64(poster.LookbackHours(fixture.app.cfg.MaxAge+recentMargin)))
+		})
 	}
-	testutil.Equal(t, fixture.app.store.Items[fixture.item.GUID].Status, state.StatusPosted)
-	fixture.assertCalls(1, 1)
-	// The uncheckable replay must not widen the check for the other items.
-	testutil.Equal(t, fixture.recentHours.Load(), int64(poster.LookbackHours(fixture.app.cfg.MaxAge+recentMargin)))
 }
 
 // Even if startup validation is bypassed, an oversized lookback must fail closed.
