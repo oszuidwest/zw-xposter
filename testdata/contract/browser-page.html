@@ -110,8 +110,7 @@
     '/fixture_account/with_replies': 'UserRepliesTimeline',
   }[location.pathname];
   if (profileTimeline) {
-    // Without pacing, recentPosts can finish its scroll attempts before these responses arrive;
-    // by default, showing the posts only after them, continuation included, keeps the test deterministic.
+    // Like X, posts appear once the first page has arrived; the next page loads on scroll.
     const articles = document.querySelectorAll('article');
     for (const article of articles) article.hidden = true;
     (async () => {
@@ -121,16 +120,12 @@
         for (const article of articles) article.remove();
         return;
       }
-      if (response.headers.get('x-offline-scroll')) {
-        // Like X: show the first page at once and load the next one on scroll.
-        for (const article of articles) article.hidden = false;
-        addEventListener('wheel', () => fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`), { once: true });
-        return;
-      }
-      if (response.headers.get('x-offline-next')) {
-        await fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
-      }
       for (const article of articles) article.hidden = false;
+      if (response.headers.get('x-offline-next')) {
+        addEventListener('wheel', () => {
+          void fetch(`/i/api/graphql/offline/${profileTimeline}?variables=%7B%22cursor%22%3A%22next%22%7D`);
+        }, { once: true });
+      }
     })();
   }
 </script>

@@ -96,6 +96,10 @@ function pause(minMs, maxMs) {
   return sleep(random(minMs, maxMs) * PACING);
 }
 
+function settle(minMs, maxMs) {
+  return sleep(random(minMs, maxMs));
+}
+
 // Keep Accept-Language and navigator.languages aligned through Chromium's profile.
 async function writeLanguagePreference() {
   const file = path.join(PROFILE_DIR, 'Default', 'Preferences');
@@ -239,7 +243,7 @@ async function isLoggedIn(page) {
   const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"]');
   await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
   // The banner renders a moment after the page.
-  await pause(1000, 2000);
+  await settle(1000, 2000);
   await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
   return nav.isVisible();
 }
@@ -505,7 +509,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
 
       await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
       // Allow delayed overlays and attachment changes to appear before the final checks.
-      await pause(1500, 4000);
+      await settle(1500, 4000);
       await acknowledgeNotice(page);
       throwIfGone();
       const videos = await dialog.locator(ATTACHMENT.video).count();
@@ -590,7 +594,7 @@ async function createReply({ text, inReplyTo, dryRun }, signal) {
     }
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
     // Leave time for a late or refetched preview card before the final checks.
-    await pause(1500, 4000);
+    await settle(1500, 4000);
     await acknowledgeNotice(page);
     // Also checked while pressing Post, as the card can return on the way there.
     const throwIfUnsafe = async () => {
@@ -626,7 +630,16 @@ async function recentPosts(hours) {
     posts: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
     replies: createTimelineCollector({ ownId, username: USERNAME, cutoff }),
   };
-  const pending = [];
+  let pending = 0;
+  const inFlight = new Set();
+  let requestsStarted = 0;
+  const onRequest = (request) => {
+    if (!profileTab(request.url())) return;
+    inFlight.add(request);
+    requestsStarted++;
+  };
+  // A failed request's missing page already leaves the tab incomplete.
+  const onRequestDone = (request) => inFlight.delete(request);
   const onResponse = (r) => {
     const timeline = timelines[profileTab(r.url())];
     if (!timeline) return;
@@ -635,33 +648,48 @@ async function recentPosts(hours) {
       return;
     }
     const firstPage = isFirstUserTweetsPage(r.url());
-    pending.push(r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)));
+    pending++;
+    r.json().then((body) => timeline.add(body, { firstPage })).catch((err) => timeline.fail(err.message)).finally(() => pending--);
+  };
+  const finishRequests = async (timeline) => {
+    if (timeline.failed()) return;
+    const deadline = Date.now() + 30_000;
+    while (inFlight.size || pending) {
+      if (Date.now() >= deadline) {
+        timeline.fail(pending
+          ? 'a UserTweets response body did not arrive within 30 seconds'
+          : 'a UserTweets request did not finish within 30 seconds');
+        return;
+      }
+      await sleep(100);
+    }
   };
   const readTab = async (timeline) => {
     const done = () => timeline.complete() || timeline.failed();
-    // A stalled body must not hold the browser queue; a failed tab needs no more pages.
-    const drain = async () => {
-      if (timeline.failed()) return;
-      if (!await Promise.race([Promise.all(pending).then(() => true), sleep(30_000, false, { ref: false })])) {
-        timeline.fail('a UserTweets response body did not arrive within 30 seconds');
-      }
-    };
     // An empty tab never shows an article, so a complete or failed timeline also ends the wait.
     const deadline = Date.now() + 30_000;
     while (!done() && !(await page.locator('article').first().isVisible())) {
       if (Date.now() >= deadline) timeline.fail(`no visible posts within 30 seconds: ${timeline.incompleteReason()}`);
       else await sleep(100);
     }
-    await pause(1500, 3000);
+    await settle(1500, 3000);
     for (let i = 0; i < 8; i++) {
-      await drain();
+      await finishRequests(timeline);
       if (done()) break;
+      const started = requestsStarted;
       await page.mouse.wheel(0, random(1500, 2500));
       await pause(1500, 3000);
+      const settleDeadline = Date.now() + 1000;
+      while (requestsStarted === started && !done() && Date.now() < settleDeadline) {
+        await sleep(100);
+      }
     }
-    await drain();
+    await finishRequests(timeline);
   };
 
+  page.on('request', onRequest);
+  page.on('requestfinished', onRequestDone);
+  page.on('requestfailed', onRequestDone);
   page.on('response', onResponse);
   try {
     await pause(1000, 2500);
@@ -675,6 +703,9 @@ async function recentPosts(hours) {
       await readTab(timelines.replies);
     }
   } finally {
+    page.off('request', onRequest);
+    page.off('requestfinished', onRequestDone);
+    page.off('requestfailed', onRequestDone);
     page.off('response', onResponse);
   }
 
