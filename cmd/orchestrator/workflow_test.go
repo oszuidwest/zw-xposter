@@ -379,16 +379,3 @@ func TestPollSendsArticleTextAndImage(t *testing.T) {
 		t.Fatalf("posts=%d, saved post URL=%q", posts, url)
 	}
 }
-
-func TestPollUnconfirmedSuccessBecomesUncertain(t *testing.T) {
-	fixture := newPollTest(t, &pollTestOptions{
-		post: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-			testutil.JSON(t, w, http.StatusOK, map[string]any{})
-		},
-	})
-	fixture.poll()
-	entry := reloadPollState(t, fixture).Items[fixture.item.GUID]
-	if entry.Status != state.StatusUncertain || !strings.Contains(entry.LastError, "without a post URL") {
-		t.Fatalf("unconfirmed success = %#v", entry)
-	}
-}

@@ -68,44 +68,21 @@ func TestSaveRoundTripsOldEntries(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownStatus(t *testing.T) {
+func TestLoadRejectsInvalidState(t *testing.T) {
 	t.Parallel()
-
 	tests := []struct {
-		name, entry, want string
+		name, body, want string
 	}{
-		{name: "unknown", entry: `{"status":"mystery"}`, want: `"mystery"`},
-		{name: "unknown format", entry: `{"status":"retry","format":"mystery"}`, want: `"mystery"`},
-		{name: "null", entry: `null`, want: `""`},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			t.Parallel()
-
-			path := filepath.Join(t.TempDir(), "state.json")
-			testutil.NoError(t, os.WriteFile(path, []byte(`{"items":{"guid-unknown":`+tt.entry+`}}`), 0o600))
-
-			_, err := Load(path)
-			if err == nil {
-				t.Fatal("Load() error = nil, want unknown-status error")
-			}
-			if message := err.Error(); !strings.Contains(message, "guid-unknown") || !strings.Contains(message, tt.want) {
-				t.Errorf("Load() error = %q, want GUID and status %s", message, tt.want)
-			}
-		})
-	}
-}
-
-func TestLoadRequiresItemsObject(t *testing.T) {
-	t.Parallel()
-	for _, tt := range []struct {
-		name, body string
-	}{
+		{name: "unknown status", body: `{"items":{"guid-unknown":{"status":"mystery"}}}`, want: `"mystery"`},
+		{name: "unknown format", body: `{"items":{"guid-unknown":{"status":"retry","format":"mystery"}}}`,
+			want: `"mystery"`},
+		{name: "null entry", body: `{"items":{"guid-unknown":null}}`, want: `""`},
 		{name: "null", body: `null`},
 		{name: "missing items", body: `{}`},
 		{name: "null items", body: `{"items":null}`},
 		{name: "array items", body: `{"items":[]}`},
-	} {
+	}
+	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 			path := filepath.Join(t.TempDir(), "state.json")
@@ -113,6 +90,11 @@ func TestLoadRequiresItemsObject(t *testing.T) {
 			store, err := Load(path)
 			if err == nil || store != nil {
 				t.Fatalf("Load() = %#v, %v; want invalid state error", store, err)
+			}
+			if tt.want != "" {
+				if message := err.Error(); !strings.Contains(message, "guid-unknown") || !strings.Contains(message, tt.want) {
+					t.Errorf("Load() error = %q, want GUID and status %s", message, tt.want)
+				}
 			}
 		})
 	}

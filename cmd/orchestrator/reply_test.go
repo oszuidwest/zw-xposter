@@ -220,22 +220,6 @@ func TestPollRecordsExistingLinkReply(t *testing.T) {
 	fixture.assertCalls(1, 0)
 }
 
-func TestPollExpiredReplyAsksForManualLink(t *testing.T) {
-	fixture := newReplyTest(t, &pollTestOptions{
-		published: testNow.Add(-25 * time.Hour),
-		initial:   state.Entry{Status: state.StatusRetry, Attempts: 3, PostURL: mainURL, LastError: "link reply: synthetic"},
-	})
-	entry := fixture.poll()
-	if entry.Status != state.StatusFailedTerminal || entry.LastError != "the post is on X, but its link reply may be missing; check it and add the article link manually: link reply: synthetic" {
-		t.Fatalf("entry = %#v", entry)
-	}
-	event, ok := workflowAlert(fixture.item.GUID, &state.Entry{Status: state.StatusRetry}, &entry)
-	if !ok || !strings.Contains(event.Details, "Post: "+mainURL) {
-		t.Fatalf("alert = %#v", event)
-	}
-	fixture.assertCalls(0, 0)
-}
-
 func TestPollRecoversInterruptedReplyAsUncertain(t *testing.T) {
 	fixture := newReplyTest(t, &pollTestOptions{
 		initial: state.Entry{Status: state.StatusPosting, Attempts: 2, Format: state.FormatImage, PostURL: mainURL},

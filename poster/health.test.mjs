@@ -8,7 +8,7 @@ import {
 
 const now = Date.parse('2026-10-03T12:00:00.000Z');
 
-test('readiness requires a recent successful session check', () => {
+test('readiness requires a recent successful session check without login backoff', () => {
   const healthy = sessionHealth({
     loggedIn: true,
     checkedAt: now - 60_000,
@@ -22,31 +22,22 @@ test('readiness requires a recent successful session check', () => {
     loginBlockedUntil: null,
   });
 
-  for (const overrides of [
-    { loggedIn: false },
-    { checkedAt: 0 },
-    { checkedAt: now - 70 * 60_000 - 1 },
+  for (const [overrides, loginBlockedUntil] of [
+    [{ loggedIn: false }, null],
+    [{ checkedAt: 0 }, null],
+    [{ checkedAt: now - 70 * 60_000 - 1 }, null],
+    [{ blockedUntil: now + 25 * 60_000 }, '2026-10-03T12:25:00.000Z'],
   ]) {
-    assert.equal(sessionHealth({
+    const status = sessionHealth({
       loggedIn: true,
       checkedAt: now,
       blockedUntil: 0,
       now,
       ...overrides,
-    }).ready, false);
+    });
+    assert.equal(status.ready, false);
+    assert.equal(status.body.loginBlockedUntil, loginBlockedUntil);
   }
-});
-
-test('login backoff makes readiness fail and is exposed in the body', () => {
-  const status = sessionHealth({
-    loggedIn: true,
-    checkedAt: now,
-    blockedUntil: now + 25 * 60_000,
-    now,
-  });
-
-  assert.equal(status.ready, false);
-  assert.equal(status.body.loginBlockedUntil, '2026-10-03T12:25:00.000Z');
 });
 
 test('session-check jitter stays between thirty and sixty minutes', () => {
