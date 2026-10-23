@@ -16,8 +16,6 @@ import (
 )
 
 func TestFetchVideo(t *testing.T) {
-	// The poster enforces the same limit as MAX_VIDEO_BYTES in poster/media.mjs.
-	testutil.Equal(t, maxVideoSize, 512<<20)
 	// Redirect temporary downloads so cleanup can be verified, including failures.
 	t.Setenv("TMPDIR", t.TempDir())
 	mp4 := testutil.MP4(time.Minute)

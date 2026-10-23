@@ -63,8 +63,7 @@ func TestClientClosesIdleConnections(t *testing.T) {
 
 func TestValidateURL(t *testing.T) {
 	allowed := map[string]struct{}{
-		"www.zuidwestupdate.nl":   {},
-		"media.zuidwestupdate.nl": {},
+		"www.zuidwestupdate.nl": {},
 	}
 	tests := []struct {
 		name    string
@@ -73,7 +72,6 @@ func TestValidateURL(t *testing.T) {
 	}{
 		{name: "feed host", rawURL: "https://www.zuidwestupdate.nl/article"},
 		{name: "case and trailing dot", rawURL: "https://WWW.ZuidWestUpdate.nl./article"},
-		{name: "additional host", rawURL: "https://media.zuidwestupdate.nl/image.jpg"},
 		{name: "http", rawURL: "http://www.zuidwestupdate.nl/article", wantErr: "https"},
 		{name: "other host", rawURL: "https://example.invalid/article", wantErr: "not allowed"},
 	}
@@ -174,20 +172,27 @@ func TestBlockRestrictedAddress(t *testing.T) {
 	}
 }
 
-func TestNewRejectsInvalidConfiguration(t *testing.T) {
+func TestNewConfiguration(t *testing.T) {
 	tests := []struct {
 		name    string
 		feedURL string
 		hosts   []string
+		wantErr string
 	}{
-		{name: "insecure feed", feedURL: "http://www.zuidwestupdate.nl/feed/"},
-		{name: "host with scheme", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{"https://media.example"}},
-		{name: "host with port", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{"media.example:8443"}},
+		{name: "insecure feed", feedURL: "http://www.zuidwestupdate.nl/feed/", wantErr: "https"},
+		{name: "host with scheme", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{"https://media.example"}, wantErr: "scheme or path"},
+		{name: "host with port", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{"media.example:8443"}, wantErr: "valid host"},
+		{name: "empty host", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{" \t "}, wantErr: "empty host"},
+		{name: "normalized extra host", feedURL: "https://www.zuidwestupdate.nl/feed/", hosts: []string{" \t MEDIA.Example. \n"}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			if _, err := New(tt.feedURL, tt.hosts); err == nil {
-				t.Fatal("New() error = nil")
+			client, err := New(tt.feedURL, tt.hosts)
+			testutil.ErrorContains(t, err, tt.wantErr)
+			if err == nil {
+				target, err := url.Parse("https://media.example/image.jpg")
+				testutil.NoError(t, err)
+				testutil.NoError(t, validateURL(target, client.Transport.(*allowlistTransport).allowed))
 			}
 		})
 	}

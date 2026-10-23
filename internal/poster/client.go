@@ -30,6 +30,13 @@ func LookbackHours(d time.Duration) int {
 
 const maxResponseBytes = 1 << 20
 
+// postTimeout leaves response headroom beyond the poster's POST_TIMEOUT_MS; poster/contract.test.mjs
+// checks both timeouts. Separate declarations let the unused linter report one that stops being used.
+const postTimeout = 5 * time.Minute
+
+// videoPostTimeout leaves response headroom beyond VIDEO_RECEIVE_TIMEOUT_MS plus VIDEO_POST_TIMEOUT_MS.
+const videoPostTimeout = 30 * time.Minute
+
 // Poster contract values shared with poster/server.mjs.
 const (
 	StageVideo   = "video"
@@ -45,8 +52,7 @@ type Client struct {
 
 // New returns a client for the poster at baseURL.
 func New(baseURL string) *Client {
-	// Leave response headroom beyond the poster's four-minute budget.
-	return &Client{baseURL: baseURL, http: &http.Client{Timeout: 5 * time.Minute}}
+	return &Client{baseURL: baseURL, http: &http.Client{Timeout: postTimeout}}
 }
 
 type request struct {
@@ -124,8 +130,7 @@ func (c *Client) PostVideo(ctx context.Context, text string, video io.Reader, ca
 		req.Header.Set("X-Post-Captions", CaptionsNone)
 	}
 	client := *c.http
-	// Allow five minutes for receipt and 24 for queued work, plus response headroom.
-	client.Timeout = 30 * time.Minute
+	client.Timeout = videoPostTimeout
 	return c.sendPost(req, &client)
 }
 
