@@ -444,9 +444,8 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
   const throwIfGone = () => signal.throwIfAborted();
   // The request may have waited in the queue behind other browser work.
   throwIfGone();
-  let { srt, ...caption } = videoFile ? await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }) : {};
-  if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
-  throwIfGone();
+  let srt;
+  let caption = {};
   let page;
   let clicked = false;
   let cancelledPage;
@@ -468,6 +467,9 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
     throwIfGone();
     signal.addEventListener('abort', closeOnCancel, { once: true });
     await ensureLoggedIn(page);
+    // Transcribe only with a working session: a login failure must not incur charges.
+    if (videoFile) ({ srt, ...caption } = await prepareSubtitles(videoFile, { signal, skip: skipCaptions, dryRun }));
+    if (caption.fallbackReason) log('video without captions:', caption.fallbackReason);
     for (let attempt = 0; attempt < 2; attempt++) {
       throwIfGone();
       await pause(2000, 5000);

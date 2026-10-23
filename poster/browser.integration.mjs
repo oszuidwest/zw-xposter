@@ -637,14 +637,16 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(result.stage, 'service');
   });
 
-  await t.test('login failure does not discard media', async () => {
+  await t.test('login failure neither discards media nor pays for a transcript', async () => {
     loggedOut = true;
     const before = published.length;
-    const response = await postVideo('Logged out', Buffer.from('MP4'), undefined, true);
+    const transcribed = transcriptions;
+    const response = await postVideo('Logged out', Buffer.from('MP4'));
     const result = await response.json();
     assert.equal(result.stage, 'service');
     assert.equal(result.clicked, false);
     assert.equal(published.length, before);
+    assert.equal(transcriptions, transcribed);
   });
 
   for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
