@@ -101,6 +101,135 @@ test('an own post without full_text makes the result incomplete', () => {
   assertUnreadable(unreadablePage((post) => { delete post.legacy.full_text; }));
 });
 
+test('an unknown entry type with any payload makes the result incomplete', () => {
+  for (const body of [modulePage(), nestedPage()]) {
+    const instruction = body.data.user.result.timeline_v2.timeline.instructions[0];
+    const content = instruction.entries[0].content;
+    for (const key of ['itemContent', 'items', 'postContent', 'value']) {
+      instruction.entries[0].content = { entryType: 'TimelineTimelineItemV2', [key]: content.itemContent || content.items };
+      assertUnreadable(body, /UserTweets has an unknown entry type: TimelineTimelineItemV2/);
+    }
+  }
+});
+
+test('an unknown instruction type with any payload makes the result incomplete', () => {
+  for (const key of ['entries', 'entry', 'moduleItems', 'newEntries']) {
+    const body = modulePage();
+    const instructions = body.data.user.result.timeline_v2.timeline.instructions;
+    instructions[0] = { type: 'TimelineAddEntriesV2', [key]: instructions[0].entries };
+    assertUnreadable(body, /UserTweets has an unknown instruction type: TimelineAddEntriesV2/);
+  }
+});
+
+test('known post-less instructions and entries without content are still skipped', () => {
+  assert.deepEqual(parseUserTweetsPayload(timeline(
+    { type: 'TimelineShowAlert' },
+    { type: 'TimelineClearCache' },
+    { type: 'TimelineClearEntriesUnreadState' },
+    { type: 'TimelineMarkEntriesUnreadGreaterThanSortIndex' },
+    { type: 'TimelineShowCover' },
+    { type: 'TimelineTerminateTimeline', direction: 'Top' },
+    { type: 'TimelineAddEntries', entries: [{}, { content: { entryType: 'TimelineTimelineCursor', cursorType: 'Top' } }] },
+  ), account), { posts: [], oldestEntry: Infinity, reachedEnd: false });
+});
+
+test('adding posts to a module makes the result incomplete', () => {
+  for (const instruction of [{ type: 'TimelineAddToModule' }, { type: 'TimelineAddToModule', moduleItems: [] }]) {
+    assertUnreadable(timeline(instruction), /UserTweets has an unknown instruction type: TimelineAddToModule/);
+  }
+});
+
+test('a tweet item without tweet_results makes the result incomplete', () => {
+  const body = nestedPage();
+  const itemContent = body.data.user.result.timeline_v2.timeline.instructions[0].entries[0].content.itemContent;
+  itemContent.itemType = 'TimelineTweet';
+  itemContent.renamed_results = itemContent.tweet_results;
+  delete itemContent.tweet_results;
+  assertUnreadable(body, /tweet item without tweet_results/);
+});
+
+test('an unknown wrapper with a falsy tweet makes the result incomplete', () => {
+  for (const tweet of [null, false, 0, '']) {
+    const body = nestedPage();
+    body.data.user.result.timeline_v2.timeline.instructions[0].entries[0].content.itemContent.tweet_results.result = {
+      __typename: 'TweetWithEditControl', tweet,
+    };
+    assertUnreadable(body, /unknown post wrapper: TweetWithEditControl/);
+  }
+});
+
+test('non-array entries make the result incomplete', () => {
+  for (const entries of [undefined, null, {}, 'entries']) {
+    assertUnreadable(timeline(
+      { type: 'TimelineAddEntries', entries },
+      { type: 'TimelineTerminateTimeline', direction: 'Bottom' },
+    ), /malformed entries/);
+  }
+});
+
+test('a pinned entry without item content makes the result incomplete', () => {
+  for (const entry of [undefined, {}, { content: {} }, { content: { itemContent: 'broken' } }, { content: { itemContent: true } }, { content: { itemContent: [] } }]) {
+    const body = pinnedPage(true);
+    body.data.user.result.timeline_v2.timeline.instructions[0].entry = entry;
+    assertUnreadable(body, /pinned post without item content/);
+  }
+});
+
+test('a visibility wrapper without a tweet object makes the result incomplete', () => {
+  for (const tweet of [undefined, null, true, 'tweet', []]) {
+    assertUnreadable(unreadablePage((post) => {
+      for (const key of Object.keys(post)) delete post[key];
+      Object.assign(post, { __typename: 'TweetWithVisibilityResults', tweet });
+    }), /visibility wrapper without a tweet/);
+  }
+});
+
+test('an own post in an unknown wrapper makes the result incomplete', () => {
+  assertUnreadable(unreadablePage((post) => {
+    const inner = { ...post };
+    for (const key of Object.keys(post)) delete post[key];
+    Object.assign(post, { __typename: 'TweetWithEditControl', tweet: inner });
+  }), /unknown post wrapper: TweetWithEditControl/);
+});
+
+test('a wrapper nested in a visibility wrapper makes the result incomplete', () => {
+  for (const nested of [{ __typename: 'TweetWithEditControl' }, { __typename: 'TweetWithVisibilityResults' }]) {
+    assertUnreadable(unreadablePage((post) => {
+      const inner = { ...post };
+      for (const key of Object.keys(post)) delete post[key];
+      Object.assign(post, { __typename: 'TweetWithVisibilityResults', tweet: { ...nested, tweet: inner } });
+    }), /unknown post wrapper/);
+  }
+});
+
+test('a malformed own user ID cannot start a timeline collection', () => {
+  assert.throws(() => createTimelineCollector({ ...account, ownId: 'abc', cutoff }), /malformed own user id/);
+});
+
+for (const id of ['x', Number('1900000000000000002'), {}, ' 1', ['1']]) {
+  test(`an own post with rest_id ${JSON.stringify(id)} makes the result incomplete`, () => {
+    assertUnreadable(unreadablePage((post) => { post.rest_id = id; }));
+  });
+
+  test(`a CreateTweet response with rest_id ${JSON.stringify(id)} is malformed`, async () => {
+    const body = await fixture('create-tweet-with-id.json');
+    body.data.create_tweet.tweet_results.result.rest_id = id;
+    assert.throws(() => parseCreateTweetResponse(body, account.username), /X returned a malformed post id/);
+  });
+}
+
+for (const retweet of [true, 'x', 1, []]) {
+  test(`an own post with retweeted_status_result ${JSON.stringify(retweet)} makes the result incomplete`, () => {
+    assertUnreadable(unreadablePage((post) => { post.legacy.retweeted_status_result = retweet; }));
+  });
+}
+
+test('a non-array errors field makes the result incomplete', () => {
+  const body = timeline({ type: 'TimelineTerminateTimeline', direction: 'Bottom' });
+  body.errors = { message: 'Timeout' };
+  assertUnreadable(body, /UserTweets returned malformed errors/);
+});
+
 for (const [name, createdAt] of [
   ['an unparseable', 'not a date'],
   ['a missing', undefined],
@@ -257,6 +386,9 @@ for (const [name, change] of [
   ['entities without a urls list', (post) => {
     post.legacy.entities = { media: [] };
   }],
+  ['an empty urls list beside an article t.co link', (post) => {
+    post.legacy.entities.urls = [];
+  }],
   ['urls that are not a list', (post) => {
     post.legacy.entities.urls = { expanded_url: 'https://example.invalid/articles/newest' };
   }],
@@ -276,6 +408,10 @@ for (const [name, change] of [
 }
 
 for (const [name, change] of [
+  ['a t.co link without note urls', (note) => {
+    note.text += ' https://t.co/article';
+    delete note.entity_set.urls;
+  }],
   ['note urls that are not a list', (note) => {
     note.entity_set.urls = {};
   }],
@@ -488,6 +624,39 @@ test('a reply with no parent author makes the result incomplete', () => {
   delete legacy.in_reply_to_user_id_str;
   delete legacy.in_reply_to_screen_name;
   assertUnreadable(body);
+});
+
+test('a missing reply parent fails closed except for own mention-led posts and other targets', async () => {
+  for (const parentId of [undefined, null]) {
+    for (const [userId, handle, text, unreadable] of [
+      [account.ownId, undefined, 'Link reply', true],
+      [undefined, 'Fixture_Account', 'Link reply', true],
+      [account.ownId, account.username, '@fixture_account2 Link reply', true],
+      [account.ownId, account.username, 'Hello @fixture_account', true],
+      ['abc', undefined, '@fixture_account Own mention', true],
+      [account.ownId, account.username, '@fixture_account Own mention', false],
+      [undefined, 'Fixture_Account', '@Fixture_Account Own mention', false],
+      ['100000000000000002', 'other_account', 'Reply to another account', false],
+      [undefined, undefined, 'Top-level post', false],
+    ]) {
+      const body = unreadablePage((post) => {
+        Object.assign(post.legacy, {
+          in_reply_to_status_id_str: parentId,
+          in_reply_to_user_id_str: userId,
+          in_reply_to_screen_name: handle,
+          full_text: text,
+          entities: { urls: [{ expanded_url: 'https://example.invalid/articles/reply' }] },
+        });
+      });
+      if (unreadable) {
+        assertUnreadable(body);
+      } else {
+        const { posts, complete } = (await collectFirstPage(body)).result();
+        assert.equal(complete, true);
+        assert.deepEqual(posts.map((post) => [post.text, post.replyTo]), [[text, undefined]]);
+      }
+    }
+  }
 });
 
 const parentID = moduleResult(replyPage(), 1).legacy.in_reply_to_status_id_str;

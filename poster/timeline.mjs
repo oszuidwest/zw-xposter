@@ -9,6 +9,9 @@ function screenName(result) {
 }
 
 function timelineInstructions(body) {
+  if (body && Object.hasOwn(body, 'errors') && !Array.isArray(body.errors)) {
+    throw new Error('UserTweets returned malformed errors');
+  }
   if (body?.errors?.length) {
     throw new Error(`UserTweets returned errors: ${errorMessages(body) || 'unknown error'}`);
   }
@@ -25,29 +28,40 @@ function timelineInstructions(body) {
 const CREATED_AT = /^[A-Z][a-z]{2} [A-Z][a-z]{2} \d{2} \d{2}:\d{2}:\d{2} [+-]\d{4} \d{4}$/;
 
 function tweetResult(itemContent) {
+  if (itemContent?.itemType === 'TimelineTweet' && !Object.hasOwn(itemContent, 'tweet_results')) {
+    throw new Error('UserTweets has a tweet item without tweet_results');
+  }
   let result = itemContent?.tweet_results?.result;
-  if (result?.__typename === 'TweetWithVisibilityResults') result = result.tweet;
+  if (result?.__typename === 'TweetWithVisibilityResults') {
+    if (!result.tweet || typeof result.tweet !== 'object' || Array.isArray(result.tweet)) {
+      throw new Error('UserTweets has a visibility wrapper without a tweet');
+    }
+    result = result.tweet;
+  }
+  // An unknown wrapper, also inside a visibility wrapper, would hide its post like a tombstone.
+  if (result && Object.hasOwn(result, 'tweet')) throw new Error(`UserTweets has an unknown post wrapper: ${result.__typename}`);
   return result;
 }
 
-// X omits empty entity lists. A missing urls list means no links only when every t.co link
-// in the text is a media link; otherwise it stays undefined and the post is unreadable.
-function legacyUrls(legacy) {
-  const entities = legacy?.entities;
-  if (entities?.urls !== undefined) return entities.urls;
+// X omits empty entity lists. Every t.co link in the text must be a listed link or media link;
+// an unlisted one could hide an article link, so the result stays undefined and the post unreadable.
+function entityUrls(text, entities) {
   if (typeof entities !== 'object' || entities === null || Array.isArray(entities)) return undefined;
+  const urls = entities.urls === undefined ? [] : entities.urls;
   const media = entities.media === undefined ? [] : entities.media;
-  if (!Array.isArray(media) || typeof legacy.full_text !== 'string') return undefined;
-  const mediaLinks = new Set(media.map((item) => item?.url));
-  const links = legacy.full_text.match(/https:\/\/t\.co\/\w+/g) || [];
-  return links.every((link) => mediaLinks.has(link)) ? [] : undefined;
+  if (!Array.isArray(urls) || !Array.isArray(media) || typeof text !== 'string') return undefined;
+  const listed = new Set([...urls, ...media].map((item) => item?.url));
+  const links = text.match(/https:\/\/t\.co\/\w+/g) || [];
+  return links.every((link) => listed.has(link)) ? urls : undefined;
 }
 
 // Unreadable link entities return null so duplicate checks fail closed.
-// Media links and absent long-post links need no expansion; legacy links do.
+// Media links need no expansion; article links do.
 function expandedUrls(legacy, note) {
-  const noteUrls = note?.entity_set?.urls;
-  const lists = [legacyUrls(legacy), noteUrls === undefined ? [] : noteUrls];
+  const lists = [
+    entityUrls(legacy?.full_text, legacy?.entities),
+    note ? entityUrls(note.text, { media: legacy?.entities?.media, ...note.entity_set }) : [],
+  ];
   if (!lists.every(Array.isArray)) return null;
   const urls = lists.flat().map((url) => url?.expanded_url);
   if (!urls.every((url) => typeof url === 'string' && url.trim() !== '')) return null;
@@ -72,11 +86,16 @@ function author(userId, handle, ownId, username) {
 // An unknown parent author could hide a link reply, so it fails closed.
 function replyParent(legacy, ownId, username, handle) {
   const parentId = legacy.in_reply_to_status_id_str;
-  if (parentId === undefined || parentId === null) return {};
   const parentHandle = legacy.in_reply_to_screen_name;
+  const parent = author(legacy.in_reply_to_user_id_str, parentHandle, ownId, username);
+  if (parentId === undefined || parentId === null) {
+    // An own mention-led post can have a reply target without being a reply.
+    const mention = /^@(\w+)/.exec(legacy.full_text)?.[1];
+    return parent === null || (parent === 'own' && (!isHandle(mention) || mention.toLowerCase() !== username.toLowerCase()))
+      ? { unreadable: true } : {};
+  }
   // A malformed parent ID would attach the reply to the wrong post.
-  const parent = isDecimalID(parentId) && author(legacy.in_reply_to_user_id_str, parentHandle, ownId, username);
-  if (!parent) return { unreadable: true };
+  if (!isDecimalID(parentId) || !parent) return { unreadable: true };
   if (parent === 'foreign') return { foreign: true };
   return { replyTo: `https://x.com/${parentHandle || handle || username}/status/${parentId}` };
 }
@@ -91,14 +110,16 @@ function parseTweet(result, ownId, username) {
   if (by === null || (by === undefined && (result?.rest_id || legacy))) {
     throw new Error(`UserTweets has a post without a readable author: ${result.rest_id || 'no id'}`);
   }
-  if (by !== 'own' || legacy?.retweeted_status_result) return null;
+  if (by !== 'own') return null;
+  const retweet = legacy?.retweeted_status_result;
+  if (retweet && typeof retweet === 'object' && !Array.isArray(retweet)) return null;
 
   // Unreadable own posts could hide duplicates, even beyond the cutoff.
   const createdAt = CREATED_AT.test(legacy?.created_at) ? new Date(legacy.created_at) : new Date(NaN);
   const note = result.note_tweet?.note_tweet_results?.result;
   const urls = expandedUrls(legacy, note);
   const parent = legacy ? replyParent(legacy, ownId, username, handle) : {};
-  if (!result.rest_id || typeof legacy?.full_text !== 'string' || Number.isNaN(createdAt.getTime()) || !urls || parent.unreadable) {
+  if (!isDecimalID(result.rest_id) || retweet || typeof legacy?.full_text !== 'string' || Number.isNaN(createdAt.getTime()) || !urls || parent.unreadable) {
     throw new Error(`UserTweets has an unreadable own post: ${result.rest_id || 'no id'}`);
   }
 
@@ -114,6 +135,14 @@ function parseTweet(result, ownId, username) {
   } };
 }
 
+// Unknown types could hide a post, so failing closed is required.
+const ENTRY_TYPES = new Set(['TimelineTimelineCursor', 'TimelineTimelineItem', 'TimelineTimelineModule']);
+const INSTRUCTION_TYPES = new Set([
+  'TimelineAddEntries', 'TimelineReplaceEntry', 'TimelinePinEntry', 'TimelineTerminateTimeline',
+  'TimelineClearCache', 'TimelineShowAlert', 'TimelineClearEntriesUnreadState',
+  'TimelineMarkEntriesUnreadGreaterThanSortIndex', 'TimelineShowCover',
+]);
+
 // Search pinned posts and conversation modules, but skip quotes and retweets.
 // Unpinned entries prove the cutoff; a conversation module sorts by its newest own post.
 export function parseUserTweetsPayload(body, { ownId = '', username }) {
@@ -124,25 +153,36 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
   let hasTweetOrModuleEntry = false;
 
   for (const instruction of timelineInstructions(body)) {
+    if (!INSTRUCTION_TYPES.has(instruction.type)) {
+      throw new Error(`UserTweets has an unknown instruction type: ${instruction.type}`);
+    }
     if (instruction.type === 'TimelineTerminateTimeline' && instruction.direction === 'Bottom') {
       reachedEnd = true;
       continue;
     }
     if (instruction.type === 'TimelinePinEntry') {
-      const parsed = parseTweet(tweetResult(instruction.entry?.content?.itemContent), ownId, username);
+      const itemContent = instruction.entry?.content?.itemContent;
+      if (!itemContent || typeof itemContent !== 'object' || Array.isArray(itemContent)) {
+        throw new Error('UserTweets has a pinned post without item content');
+      }
+      const parsed = parseTweet(tweetResult(itemContent), ownId, username);
       if (parsed?.post) posts.push(parsed.post);
       continue;
     }
 
     let entries = [];
-    if (instruction.type === 'TimelineAddEntries' && Array.isArray(instruction.entries)) {
+    if (instruction.type === 'TimelineAddEntries') {
+      if (!Array.isArray(instruction.entries)) throw new Error('UserTweets has malformed entries');
       entries = instruction.entries;
-    } else if (instruction.type === 'TimelineReplaceEntry' && instruction.entry) {
-      entries = [instruction.entry];
+    } else if (instruction.type === 'TimelineReplaceEntry') {
+      entries = instruction.entry ? [instruction.entry] : [];
     }
 
     for (const entry of entries) {
       const content = entry?.content;
+      if (content && !ENTRY_TYPES.has(content.entryType)) {
+        throw new Error(`UserTweets has an unknown entry type: ${content.entryType}`);
+      }
       if (content?.entryType === 'TimelineTimelineCursor' && content.cursorType === 'Bottom') {
         hasBottomCursor = true;
         continue;
@@ -207,6 +247,7 @@ export function isFirstUserTweetsPage(responseURL) {
 
 // Collect pages; completeness requires the first page, a boundary and no failures.
 export function createTimelineCollector({ ownId = '', username, cutoff }) {
+  if (ownId && !isDecimalID(ownId)) throw new Error('UserTweets has a malformed own user id');
   const found = new Map();
   let reachedBoundary = false;
   let sawFirstPage = false;
@@ -260,6 +301,7 @@ export function parseCreateTweetResponse(body, username, { inReplyTo } = {}) {
     const reason = errorMessages(body) || 'no tweet id in response';
     throw new Error(`X rejected the post: ${reason}`);
   }
+  if (!isDecimalID(id)) throw new Error('X returned a malformed post id');
   const parent = result.legacy?.in_reply_to_status_id_str;
   if (inReplyTo && parent !== inReplyTo) {
     throw new Error(`X published the reply under ${parent ? `post ${parent}` : 'no post'} instead of ${inReplyTo}`);

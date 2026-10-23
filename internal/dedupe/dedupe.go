@@ -3,7 +3,9 @@ package dedupe
 
 import (
 	"net/url"
+	"strconv"
 	"strings"
+	"time"
 
 	"github.com/oszuidwest/zw-xposter/internal/poster"
 )
@@ -64,6 +66,15 @@ func SameLink(a, b string) bool {
 	hostA, pathA, okA := split(a)
 	hostB, pathB, okB := split(b)
 	return okA && okB && hostA == hostB && pathA == pathB
+}
+
+// PostTime returns the creation time encoded in a status URL's snowflake ID.
+func PostTime(raw string) (time.Time, bool) {
+	id, err := strconv.ParseUint(statusID(raw), 10, 64)
+	if err != nil {
+		return time.Time{}, false
+	}
+	return time.UnixMilli(int64(id>>22) + 1288834974657), true // X epoch, in Unix milliseconds
 }
 
 // statusID returns the post ID in a status URL.

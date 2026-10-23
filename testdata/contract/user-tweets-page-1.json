@@ -22,7 +22,7 @@
                               "user_id_str": "100000000000000001",
                               "full_text": "Newest article https://t.co/newest",
                               "created_at": "Fri Oct 02 14:00:00 +0000 2026",
-                              "entities": {"urls": [{"expanded_url": "https://example.invalid/articles/newest"}]}
+                              "entities": {"urls": [{"url": "https://t.co/newest", "expanded_url": "https://example.invalid/articles/newest"}]}
                             }
                           }
                         }
