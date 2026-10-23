@@ -39,6 +39,7 @@ func TestFetch(t *testing.T) {
 			body: strings.Replace(sample, "Thu, 01 Oct 2026 11:00:17 +0000", "not a date", 1),
 			want: []string{"https://example.nl/?p=2: Newest ‘article’"},
 		},
+		{name: "missing GUID uses link identity", body: strings.Replace(sample, `<guid isPermaLink="false">https://example.nl/?p=1</guid>`, "", 1), want: []string{"https://example.nl/a/: Older article", "https://example.nl/?p=2: Newest ‘article’"}},
 		{name: "oversized body", body: strings.Repeat("x", maxBodySize+1), wantErr: "fetch feed: response exceeds"},
 		{name: "HTML error page", body: `<html><body>Temporarily unavailable</body></html>`, wantErr: "parse feed:"},
 		{name: "missing channel", body: `<rss version="2.0"></rss>`, wantErr: "feed has no channel"},

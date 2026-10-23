@@ -34,6 +34,8 @@ test('collects an ordinary timeline over multiple pages until the cutoff', async
 });
 
 for (const [name, page, complete, ids, urls] of [
+  ['a post exactly at the cutoff leaves the timeline incomplete',
+    () => withFirstPost(nestedPage(), (post) => { post.legacy.created_at = 'Fri Oct 02 12:00:00 +0000 2026'; }), false, ['900000000000000301']],
   ['an old pinned entry does not complete the requested range',
     pinnedPage, false, ['900000000000000202']],
   ['a recent pinned post is collected for the duplicate check',
