@@ -122,17 +122,34 @@ func (s *Store) SetAt(guid string, e *Entry, now time.Time) {
 }
 
 // Save atomically replaces the state file via rename; callers must serialize writes.
+// It syncs the file and its directory, so a saved write-ahead record survives a host crash.
 func (s *Store) Save() error {
 	data, err := json.MarshalIndent(s, "", "  ")
 	if err != nil {
 		return err
 	}
-	if err := os.MkdirAll(filepath.Dir(s.path), 0o750); err != nil {
+	dir := filepath.Dir(s.path)
+	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
 	tmp := s.path + ".tmp"
-	if err := os.WriteFile(tmp, data, 0o600); err != nil {
+	f, err := os.OpenFile(tmp, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600) //nolint:gosec // The state path is operator-configured, not user input.
+	if err != nil {
 		return err
 	}
-	return os.Rename(tmp, s.path)
+	_, err = f.Write(data)
+	if err == nil {
+		err = f.Sync()
+	}
+	if err := errors.Join(err, f.Close()); err != nil {
+		return err
+	}
+	if err := os.Rename(tmp, s.path); err != nil {
+		return err
+	}
+	d, err := os.Open(dir) //nolint:gosec // The state path is operator-configured, not user input.
+	if err != nil {
+		return err
+	}
+	return errors.Join(d.Sync(), d.Close())
 }
