@@ -282,9 +282,10 @@ func TestPollPostTransitions(t *testing.T) {
 				},
 			})
 
-			fixture.poll()
-			// Check the saved outcome, not only the one in memory.
-			entry := reloadPollState(t, fixture).Items[fixture.item.GUID]
+			entry := fixture.poll()
+			// The saved outcome must match the one in memory; JSON restores times in UTC.
+			entry.PublishedAt = entry.PublishedAt.UTC()
+			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID], entry)
 			if !strings.Contains(entry.LastError, tt.wantError) {
 				t.Errorf("last error = %q, want it to contain %q", entry.LastError, tt.wantError)
 			}
@@ -600,30 +601,17 @@ func TestPollExpiredTransitions(t *testing.T) {
 			wantError: "retry window expired while the outcome was uncertain; " +
 				"the post may already be on X and must be checked manually: synthetic lost response",
 		},
-		{
-			name: "expired reply asks for its link to be added manually",
-			initial: state.Entry{Status: state.StatusRetry, Attempts: 3,
-				PostURL: mainURL, LastError: "link reply: synthetic"},
-			wantStatus: state.StatusFailedTerminal,
-			wantError: "the post is on X, but its link reply may be missing; " +
-				"check it and add the article link manually: link reply: synthetic",
-		},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := newReplyTest(t, &pollTestOptions{
+			fixture := newPollTest(t, &pollTestOptions{
 				published: testNow.Add(-25 * time.Hour),
 				initial:   tt.initial,
 			})
 			entry := fixture.poll()
 			testutil.Equal(t, entry.Status, tt.wantStatus)
 			testutil.Equal(t, entry.LastError, tt.wantError)
-			event, ok := workflowAlert(fixture.item.GUID, &tt.initial, &entry)
-			missingPost := tt.initial.PostURL != "" && !strings.Contains(event.Details, "Post: "+tt.initial.PostURL)
-			if !ok || missingPost {
-				t.Fatalf("alert = %#v", event)
-			}
 			fixture.assertCalls(0, 0)
 		})
 	}

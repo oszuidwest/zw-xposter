@@ -289,7 +289,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal((await fetch(`${base}/ready`)).status, 200);
   });
 
-  await t.test('serializes simultaneous posts and returns confirmed URLs', async () => {
+  await t.test('serializes text and image posts and returns confirmed URLs', async () => {
     const before = published.length;
     const responses = await Promise.all([post('First'), post('Second', undefined, image)]);
     for (const response of responses) {
@@ -309,8 +309,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       : postVideo('Cancelled captions', Buffer.from('synthetic MP4'), controller.signal);
     // Attach the rejection handler before aborting to avoid an unhandled rejection.
     const aborted = assert.rejects(response, { name: 'AbortError' });
-    if (phase === 'deferred caption upload') await captionsRequested.promise;
-    else await (phase === 'captions' ? captionSelected.promise : context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
+    const ready = { captions: captionSelected.promise, 'deferred caption upload': captionsRequested.promise }[phase];
+    await (ready ?? context.pages()[0].locator('[role=dialog]:not([hidden])').waitFor());
     // A cancel closes the server's tab; the disabled Post button would otherwise hide a missed text cancel.
     const closed = context.pages()[0].waitForEvent('close', { timeout: 5_000 });
     controller.abort();
@@ -323,7 +323,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.deepEqual(published, before);
   });
 
-  await t.test('combines headline posts from the Posts tab with link replies from the Replies tab', async () => {
+  await t.test('combines headline posts and link replies after scrolling both tabs', async () => {
     profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await recentFixture('user-replies-timeline.json') };
     // Without the article exit, the wait would only end at the 30 second deadline.
     const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });

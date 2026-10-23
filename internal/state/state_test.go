@@ -91,10 +91,9 @@ func TestLoadRejectsInvalidState(t *testing.T) {
 			if err == nil || store != nil {
 				t.Fatalf("Load() = %#v, %v; want invalid state error", store, err)
 			}
-			if tt.want != "" {
-				if message := err.Error(); !strings.Contains(message, "guid-unknown") || !strings.Contains(message, tt.want) {
-					t.Errorf("Load() error = %q, want GUID and status %s", message, tt.want)
-				}
+			if message := err.Error(); tt.want != "" &&
+				(!strings.Contains(message, "guid-unknown") || !strings.Contains(message, tt.want)) {
+				t.Errorf("Load() error = %q, want GUID and status %s", message, tt.want)
 			}
 		})
 	}
