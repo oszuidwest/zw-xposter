@@ -535,8 +535,8 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         if (err.stage === 'captions') {
           caption.captions = 'none';
           caption.fallbackReason = `caption upload: ${err.message}`;
-          // Keep clicked=true so the retry checks X before publishing again.
-          log('video without captions on retry:', caption.fallbackReason);
+          // Keep clicked=true: reconcile the uncertain post by its article link; never retry it.
+          log('caption upload failed after Post:', caption.fallbackReason);
         }
         throw err;
       }
