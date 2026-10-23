@@ -76,12 +76,6 @@ func TestFindReturnsLinkedReply(t *testing.T) {
 	}
 }
 
-func TestNewerPost(t *testing.T) {
-	testutil.Equal(t, NewerPost("https://x.com/a/status/1010", "https://x.com/a/status/999"), true)
-	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/102"), false)
-	testutil.Equal(t, NewerPost("https://x.com/a/status/101", "https://x.com/a/status/101"), false)
-}
-
 func TestPostTime(t *testing.T) {
 	for _, tt := range []struct {
 		name string

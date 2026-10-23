@@ -54,12 +54,6 @@ func SamePost(a, b string) bool {
 	return id != "" && id == statusID(b)
 }
 
-// NewerPost reports whether status URL a is a later post than b; X status IDs grow over time.
-func NewerPost(a, b string) bool {
-	idA, idB := statusID(a), statusID(b)
-	return len(idA) > len(idB) || len(idA) == len(idB) && idA > idB
-}
-
 // SameLink reports whether a and b link to the same article: host and path match, ignoring case,
 // scheme, www, queries and edge slashes.
 func SameLink(a, b string) bool {
