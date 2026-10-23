@@ -43,16 +43,16 @@ function tweetResult(itemContent) {
   return result;
 }
 
-// X omits empty entity lists. A missing urls list means no links only when every t.co link
-// in the text is a media link; otherwise it stays undefined and the post is unreadable.
+// X omits empty entity lists. Every t.co link in the text must be a listed link or media link;
+// an unlisted one could hide an article link, so the result stays undefined and the post unreadable.
 function entityUrls(text, entities) {
-  if (entities?.urls !== undefined) return entities.urls;
   if (typeof entities !== 'object' || entities === null || Array.isArray(entities)) return undefined;
+  const urls = entities.urls === undefined ? [] : entities.urls;
   const media = entities.media === undefined ? [] : entities.media;
-  if (!Array.isArray(media) || typeof text !== 'string') return undefined;
-  const mediaLinks = new Set(media.map((item) => item?.url));
+  if (!Array.isArray(urls) || !Array.isArray(media) || typeof text !== 'string') return undefined;
+  const listed = new Set([...urls, ...media].map((item) => item?.url));
   const links = text.match(/https:\/\/t\.co\/\w+/g) || [];
-  return links.every((link) => mediaLinks.has(link)) ? [] : undefined;
+  return links.every((link) => listed.has(link)) ? urls : undefined;
 }
 
 // Unreadable link entities return null so duplicate checks fail closed.
@@ -162,7 +162,9 @@ export function parseUserTweetsPayload(body, { ownId = '', username }) {
     }
     if (instruction.type === 'TimelinePinEntry') {
       const itemContent = instruction.entry?.content?.itemContent;
-      if (!itemContent) throw new Error('UserTweets has a pinned post without item content');
+      if (!itemContent || typeof itemContent !== 'object' || Array.isArray(itemContent)) {
+        throw new Error('UserTweets has a pinned post without item content');
+      }
       const parsed = parseTweet(tweetResult(itemContent), ownId, username);
       if (parsed?.post) posts.push(parsed.post);
       continue;

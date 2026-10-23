@@ -168,7 +168,7 @@ test('non-array entries make the result incomplete', () => {
 });
 
 test('a pinned entry without item content makes the result incomplete', () => {
-  for (const entry of [undefined, {}, { content: {} }]) {
+  for (const entry of [undefined, {}, { content: {} }, { content: { itemContent: 'broken' } }, { content: { itemContent: true } }, { content: { itemContent: [] } }]) {
     const body = pinnedPage(true);
     body.data.user.result.timeline_v2.timeline.instructions[0].entry = entry;
     assertUnreadable(body, /pinned post without item content/);
@@ -385,6 +385,9 @@ for (const [name, change] of [
   }],
   ['entities without a urls list', (post) => {
     post.legacy.entities = { media: [] };
+  }],
+  ['an empty urls list beside an article t.co link', (post) => {
+    post.legacy.entities.urls = [];
   }],
   ['urls that are not a list', (post) => {
     post.legacy.entities.urls = { expanded_url: 'https://example.invalid/articles/newest' };
