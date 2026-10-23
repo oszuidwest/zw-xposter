@@ -374,11 +374,7 @@ func TestPollRecentMissingKnownPostsFailsClosed(t *testing.T) {
 		{name: "post and reply", entry: state.Entry{PostURL: knownPostURL, ReplyURL: knownReplyURL}, kind: "posts"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			fixture := newPollTest(t, &pollTestOptions{
-				recent: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-					testutil.JSON(t, w, http.StatusOK, map[string]any{"posts": []any{}, "complete": true})
-				},
-			})
+			fixture := newPollTest(t, &pollTestOptions{})
 			tt.entry.Status, tt.entry.PublishedAt = state.StatusPosted, testNow.Add(-72*time.Hour)
 			fixture.app.store.SetAt("posted", &tt.entry, testNow.Add(-time.Hour))
 			fixture.assertPollFailsUnchanged("missing all 1 known "+tt.kind, 1)
