@@ -395,11 +395,7 @@ func (a *app) processItem(ctx context.Context, item *feed.Item, workflow *pollSt
 	}
 	if age := workflow.now.Sub(item.Published); age > workflow.lookback {
 		// Only replays get here: unexpired items are within MAX_AGE, inside the lookback.
-		entry.Status = state.StatusFailedTerminal
-		entry.LastError = fmt.Sprintf("article is %d hours old, beyond the %d hours of X history the poster can check; check X manually",
-			poster.LookbackHours(age), poster.MaxLookbackHours)
-		slog.Error("article cannot be checked against X and needs manual review", "guid", item.GUID, "title", item.Title, "error", entry.LastError)
-		return a.record(item.GUID, &entry)
+		return a.recordBeyondLookback(item.GUID, &entry, age)
 	}
 	if workflow.now.Before(eligibleAt(&entry)) {
 		return nil
@@ -547,9 +543,9 @@ func (a *app) expired(entry *state.Entry, now time.Time) bool {
 	return now.Sub(start) > a.cfg.MaxAge
 }
 
-// uncertainExpired starts the error of an entry that expired after an uncertain attempt without a
-// known post. headlineOnX matches it, also in state saved by earlier releases, so the
-// text must not change.
+// uncertainExpired starts the error of an entry that gave up after an uncertain attempt without a
+// known post, at MAX_AGE or beyond the X history. headlineOnX matches it, also in state saved by
+// earlier releases, so the text must not change.
 const uncertainExpired = "retry window expired while the outcome was uncertain"
 
 func (a *app) recordExpired(guid string, entry *state.Entry) error {
@@ -582,6 +578,18 @@ func (a *app) recordExpired(guid string, entry *state.Entry) error {
 		}
 		slog.Error("retry window expired", "title", entry.Title, "attempts", entry.Attempts, "last_error", entry.LastError)
 	}
+	return a.record(guid, entry)
+}
+
+func (a *app) recordBeyondLookback(guid string, entry *state.Entry, age time.Duration) error {
+	entry.LastError = fmt.Sprintf("article is %d hours old, beyond the %d hours of X history the poster can check; check X manually",
+		poster.LookbackHours(age), poster.MaxLookbackHours)
+	if entry.Status == state.StatusUncertain {
+		// Keep the marker headlineOnX reads: the uncertain headline may be on X.
+		entry.LastError = uncertainExpired + "; " + entry.LastError
+	}
+	entry.Status = state.StatusFailedTerminal
+	slog.Error("article cannot be checked against X and needs manual review", "guid", guid, "title", entry.Title, "error", entry.LastError)
 	return a.record(guid, entry)
 }
 
