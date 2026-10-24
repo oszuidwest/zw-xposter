@@ -4,16 +4,18 @@ set -euo pipefail
 image=${1:?usage: bash container/test.sh IMAGE}
 container="xposter-test-$$-$RANDOM"
 root=$(cd "$(dirname "$0")/.." && pwd)
-cleanup() { docker rm -f "$container" >/dev/null 2>&1 || true; }
+cleanup() { docker rm -f "$container" "$container-entrypoint" >/dev/null 2>&1 || true; }
 trap 'cleanup' EXIT
 offline=(--network none --shm-size=1g --tmpfs '/data:uid=1000,gid=1000,mode=0700'
     -e X_USERNAME=offline-test -e X_AUTH_TOKEN=offline-test)
 serve_fresh='echo '\''{"items":{}}'\'' >/data/state.json && exec /app/entrypoint.sh serve "$@"'
 
 # Isolate startup ordering and timeouts from browser and session behavior.
-docker run --rm --network none --user 0 \
+# These tests mostly wait out deadlines, so they run alongside the browser test.
+docker run --rm --name "$container-entrypoint" --network none --user 0 \
     -v "$root/container/entrypoint.test.sh:/tmp/entrypoint.test.sh:ro" \
-    "$image" bash /tmp/entrypoint.test.sh
+    "$image" bash /tmp/entrypoint.test.sh &
+entrypoint_tests=$!
 
 start() {
     docker run -d --name "$container" "${offline[@]}" -e GRAPH_CLIENT_SECRET=offline-test \
@@ -43,6 +45,7 @@ docker run --rm --network none --shm-size=1g \
     -v "$root/poster/browser.integration.mjs:/app/poster/browser.integration.mjs:ro" \
     -v "$root/testdata/contract:/app/testdata/contract:ro" \
     "$image" node --test browser.integration.mjs
+wait "$entrypoint_tests"
 
 # No automatic initialization or masking of CLI exit codes.
 if docker run --rm --network none "$image" /app/orchestrator; then
