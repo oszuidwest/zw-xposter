@@ -31,6 +31,8 @@ test('collects an ordinary timeline over multiple pages until the cutoff', async
 
   timeline.add(await fixture('user-tweets-page-2.json'));
   assert.deepEqual(timeline.result(), await fixture('recent-complete.json'));
+  timeline.add(replyPage());
+  assert.ok(timeline.result().posts.some((post) => post.urls.includes('https://example.invalid/articles/reply')));
 });
 
 for (const [name, page, complete, ids, urls] of [
