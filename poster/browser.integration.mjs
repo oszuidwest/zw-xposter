@@ -149,6 +149,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
           : { media_id_string: 'caption-123', subtitles: { subtitle_format: 'text/srt' } }) });
       }
       if (command === 'INIT') uploads++;
+      // Hold a successful image response briefly: publishing before it arrives is a bug.
+      if (!command && !failImage) await context.pages()[0].waitForRequest('**/CreateTweet', { timeout: 6_000 }).then(() => unexpected.push('publication before image upload response'), () => {});
       if (!command) return route.fulfill({ status: failImage ? 400 : 200, contentType: 'application/json', body: JSON.stringify({ media_id_string: 'image-123' }) });
       if (command === 'APPEND') {
         uploadedBytes = request.postDataBuffer().length;
