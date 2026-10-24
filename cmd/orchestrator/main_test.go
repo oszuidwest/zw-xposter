@@ -263,13 +263,13 @@ func TestPollPostTransitions(t *testing.T) {
 			body: map[string]any{"url": mainURL}, wantStatus: state.StatusPosted},
 		{name: "rate limit before click becomes retry", statusCode: http.StatusTooManyRequests,
 			body:       map[string]any{"error": "synthetic poster failure", "clicked": false},
-			wantStatus: state.StatusRetry, wantBackoff: retryInitial},
+			wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "synthetic poster failure"},
 		{name: "server error before click becomes retry", statusCode: http.StatusInternalServerError,
 			body:       map[string]any{"error": "synthetic poster failure", "clicked": false},
-			wantStatus: state.StatusRetry, wantBackoff: retryInitial},
+			wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "synthetic poster failure"},
 		{name: "server error after click becomes uncertain", statusCode: http.StatusInternalServerError,
 			body:       map[string]any{"error": "synthetic poster failure", "clicked": true},
-			wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum},
+			wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum, wantError: "synthetic poster failure"},
 		{name: "success without URL becomes uncertain", statusCode: http.StatusOK, body: map[string]any{},
 			wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum, wantError: "without a post URL"},
 	}
@@ -286,8 +286,8 @@ func TestPollPostTransitions(t *testing.T) {
 			// The saved outcome must match the one in memory; JSON restores times in UTC.
 			entry.PublishedAt = entry.PublishedAt.UTC()
 			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID], entry)
-			if !strings.Contains(entry.LastError, tt.wantError) {
-				t.Errorf("last error = %q, want it to contain %q", entry.LastError, tt.wantError)
+			if got := entry.LastError; tt.wantError == "" && got != "" || !strings.Contains(got, tt.wantError) {
+				t.Errorf("last error = %q, want it to contain %q (empty means none)", got, tt.wantError)
 			}
 			checkedAt := fixture.app.status.Snapshot().LastSuccessfulXCheck
 			if checkedAt == nil || !checkedAt.Equal(testNow) {
