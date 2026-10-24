@@ -254,31 +254,41 @@ func TestPostText(t *testing.T) {
 
 func TestPollPostTransitions(t *testing.T) {
 	tests := []struct {
-		name        string
-		statusCode  int
-		clicked     bool
-		wantStatus  string
-		wantBackoff time.Duration
+		name, wantStatus, wantError string
+		statusCode                  int
+		body                        map[string]any
+		wantBackoff                 time.Duration
 	}{
-		{name: "success becomes posted", statusCode: http.StatusOK, wantStatus: state.StatusPosted},
-		{name: "rate limit before click becomes retry", statusCode: http.StatusTooManyRequests, wantStatus: state.StatusRetry, wantBackoff: retryInitial},
-		{name: "server error before click becomes retry", statusCode: http.StatusInternalServerError, wantStatus: state.StatusRetry, wantBackoff: retryInitial},
-		{name: "server error after click becomes uncertain", statusCode: http.StatusInternalServerError, clicked: true, wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum},
+		{name: "success becomes posted", statusCode: http.StatusOK,
+			body: map[string]any{"url": mainURL}, wantStatus: state.StatusPosted},
+		{name: "rate limit before click becomes retry", statusCode: http.StatusTooManyRequests,
+			body:       map[string]any{"error": "synthetic poster failure", "clicked": false},
+			wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "synthetic poster failure"},
+		{name: "server error before click becomes retry", statusCode: http.StatusInternalServerError,
+			body:       map[string]any{"error": "synthetic poster failure", "clicked": false},
+			wantStatus: state.StatusRetry, wantBackoff: retryInitial, wantError: "synthetic poster failure"},
+		{name: "server error after click becomes uncertain", statusCode: http.StatusInternalServerError,
+			body:       map[string]any{"error": "synthetic poster failure", "clicked": true},
+			wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum, wantError: "synthetic poster failure"},
+		{name: "success without URL becomes uncertain", statusCode: http.StatusOK, body: map[string]any{},
+			wantStatus: state.StatusUncertain, wantBackoff: uncertainMinimum, wantError: "without a post URL"},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			fixture := newPollTest(t, &pollTestOptions{
 				post: func(w http.ResponseWriter, _ *http.Request, _ feed.Item) {
-					if tt.statusCode == http.StatusOK {
-						testutil.JSON(t, w, tt.statusCode, map[string]any{"url": "https://x.invalid/fixture/status/1"})
-						return
-					}
-					testutil.JSON(t, w, tt.statusCode, map[string]any{"error": "synthetic poster failure", "clicked": tt.clicked})
+					testutil.JSON(t, w, tt.statusCode, tt.body)
 				},
 			})
 
 			entry := fixture.poll()
+			// The saved outcome must match the one in memory; JSON restores times in UTC.
+			entry.PublishedAt = entry.PublishedAt.UTC()
+			testutil.Equal(t, reloadPollState(t, fixture).Items[fixture.item.GUID], entry)
+			if got := entry.LastError; tt.wantError == "" && got != "" || !strings.Contains(got, tt.wantError) {
+				t.Errorf("last error = %q, want it to contain %q (empty means none)", got, tt.wantError)
+			}
 			checkedAt := fixture.app.status.Snapshot().LastSuccessfulXCheck
 			if checkedAt == nil || !checkedAt.Equal(testNow) {
 				t.Errorf("last complete X check = %v, want %s", checkedAt, testNow)
@@ -564,10 +574,10 @@ func TestPollDoesNotPostWhenWriteAheadSaveFails(t *testing.T) {
 
 func TestPollExpiredTransitions(t *testing.T) {
 	tests := []struct {
-		name              string
-		initial           state.Entry
-		wantStatus        string
-		wantErrorContains string
+		name       string
+		initial    state.Entry
+		wantStatus string
+		wantError  string
 	}{
 		{name: "pending becomes missed", wantStatus: state.StatusMissed},
 		{
@@ -578,6 +588,7 @@ func TestPollExpiredTransitions(t *testing.T) {
 				LastError: "synthetic failure",
 			},
 			wantStatus: state.StatusFailedTerminal,
+			wantError:  "synthetic failure",
 		},
 		{
 			name: "uncertain warns that the post may be on X",
@@ -586,8 +597,9 @@ func TestPollExpiredTransitions(t *testing.T) {
 				Attempts:  1,
 				LastError: "synthetic lost response",
 			},
-			wantStatus:        state.StatusFailedTerminal,
-			wantErrorContains: "may already be on X and must be checked manually",
+			wantStatus: state.StatusFailedTerminal,
+			wantError: "retry window expired while the outcome was uncertain; " +
+				"the post may already be on X and must be checked manually: synthetic lost response",
 		},
 	}
 
@@ -599,9 +611,7 @@ func TestPollExpiredTransitions(t *testing.T) {
 			})
 			entry := fixture.poll()
 			testutil.Equal(t, entry.Status, tt.wantStatus)
-			if !strings.Contains(entry.LastError, tt.wantErrorContains) {
-				t.Errorf("last error = %q, want it to contain %q", entry.LastError, tt.wantErrorContains)
-			}
+			testutil.Equal(t, entry.LastError, tt.wantError)
 			fixture.assertCalls(0, 0)
 		})
 	}

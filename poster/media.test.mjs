@@ -109,17 +109,6 @@ test('image uploads require server confirmation, not just a preview', async () =
   assert.equal(f.previews(), 1);
 });
 
-test('account and unknown API errors preserve their non-media classification', async (t) => {
-  for (const status of [401, 403, 200]) await t.test(`HTTP ${status}`, async () => {
-    const f = uploadFixture();
-    const upload = uploadVideo(f.page, f.dialog, '/tmp/fixture.mp4');
-    const rejected = assert.rejects(upload, { stage: status === 200 ? 'service' : 'session' });
-    await f.selected;
-    f.emit({ errors: [{ code: 326, message: 'account restricted' }] }, { status });
-    await rejected;
-  });
-});
-
 test('synchronous FINALIZE succeeds without processing_info', async (t) => {
   for (const form of [false, true]) {
     await t.test(form ? 'form body' : 'query string', async () => {
@@ -138,6 +127,9 @@ test('rejected uploads never reach the preview', async (t) => {
     ['http', 400, {}, /HTTP 400/],
     ['encoding', 200, { processing_info: { state: 'failed', error: { message: 'bad codec' } } }, /bad codec/],
     ['api', 200, { errors: [{ message: 'too long' }] }, /too long/],
+    ['HTTP 401', 401, { errors: [{ code: 326, message: 'account restricted' }] }, { stage: 'session' }],
+    ['HTTP 403', 403, { errors: [{ code: 326, message: 'account restricted' }] }, { stage: 'session' }],
+    ['HTTP 200', 200, { errors: [{ code: 326, message: 'account restricted' }] }, { stage: 'service' }],
   ]) {
     await t.test(name, async () => {
       const f = uploadFixture();

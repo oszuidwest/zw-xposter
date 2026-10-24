@@ -31,16 +31,13 @@ test('collects an ordinary timeline over multiple pages until the cutoff', async
 
   timeline.add(await fixture('user-tweets-page-2.json'));
   assert.deepEqual(timeline.result(), await fixture('recent-complete.json'));
-});
-
-test('a continuation page cannot complete a timeline without the first page', async () => {
-  const timeline = createTimelineCollector({ ...account, cutoff });
-  timeline.add(await fixture('user-tweets-page-2.json'));
-
-  assert.equal(timeline.result().complete, false);
+  timeline.add(replyPage());
+  assert.deepEqual(timeline.result().posts.find((post) => post.id === '900000000000000902')?.urls, ['https://example.invalid/articles/reply']);
 });
 
 for (const [name, page, complete, ids, urls] of [
+  ['a post exactly at the cutoff leaves the timeline incomplete',
+    () => withFirstPost(nestedPage(), (post) => { post.legacy.created_at = 'Fri Oct 02 12:00:00 +0000 2026'; }), false, ['900000000000000301']],
   ['an old pinned entry does not complete the requested range',
     pinnedPage, false, ['900000000000000202']],
   ['a recent pinned post is collected for the duplicate check',
@@ -220,30 +217,21 @@ for (const id of ['x', Number('1900000000000000002'), {}, ' 1', ['1']]) {
   });
 }
 
-for (const retweet of [true, 'x', 1, []]) {
-  test(`an own post with retweeted_status_result ${JSON.stringify(retweet)} makes the result incomplete`, () => {
-    assertUnreadable(unreadablePage((post) => { post.legacy.retweeted_status_result = retweet; }));
-  });
-}
-
 test('a non-array errors field makes the result incomplete', () => {
   const body = timeline({ type: 'TimelineTerminateTimeline', direction: 'Bottom' });
   body.errors = { message: 'Timeout' };
   assertUnreadable(body, /UserTweets returned malformed errors/);
 });
 
-for (const [name, createdAt] of [
-  ['an unparseable', 'not a date'],
-  ['a missing', undefined],
-  ['a null', null],
-  ['a numeric', 0],
-  ['an empty', ''],
-  ['a bare-number string', '0'],
+for (const [field, values] of [
+  ['retweeted_status_result', [true, 'x', 1, []]],
+  ['created_at', ['not a date', undefined, null, 0, '', '0']],
 ]) {
-  test(`an own post with ${name} created_at makes the result incomplete`, () => {
-    const body = unreadablePage((post) => { post.legacy.created_at = createdAt; });
-    assertUnreadable(body);
-  });
+  for (const value of values) {
+    test(`an own post with ${field} ${JSON.stringify(value)} makes the result incomplete`, () => {
+      assertUnreadable(unreadablePage((post) => { post.legacy[field] = value; }));
+    });
+  }
 }
 
 test('an unreadable own pinned post makes the result incomplete', () => {
@@ -323,6 +311,9 @@ for (const [name, ownId, change] of [
   }],
   ['a handle with a path beside its own user ID', account.ownId, (post) => {
     post.core.user_results.result.core.screen_name = 'fixture_account/status/1';
+  }],
+  ['a sixteen-character handle beside its own user ID', account.ownId, (post) => {
+    post.core.user_results.result.core.screen_name = 'fixture_account1';
   }],
   ['an empty user ID beside its own handle', account.ownId, (post) => {
     post.legacy.user_id_str = '';
@@ -516,6 +507,7 @@ for (const [name, text, entities] of [
 test('reports why a timeline is incomplete', async () => {
   const continuation = createTimelineCollector({ ...account, cutoff });
   continuation.add(await fixture('user-tweets-page-2.json'));
+  assert.equal(continuation.result().complete, false);
   assert.match(continuation.incompleteReason(), /first UserTweets page was not seen/);
 
   const timeline = await collectFirstPage(fixture('user-tweets-page-1.json'));
