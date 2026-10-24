@@ -19,6 +19,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   process.env.HEADLESS = 'true';
   // The offline browser needs no human pacing; cancellation tests wait on explicit fixture hooks.
   process.env.POSTER_PACING = '0';
+  // Failure tests wait out these X deadlines.
+  process.env.POSTER_X_WAIT_MS = '5000';
   const srt = '1\n00:00:00,000 --> 00:00:02,500\nNieuws uit West-Brabant.\n\n';
   let failTranscription;
   let transcriptions = 0;
@@ -196,7 +198,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         await releaseReplies.promise;
       }
       const continuation = JSON.parse(url.searchParams.get('variables')).cursor;
-      if (slowContinuation === tab && continuation) await sleep(10_000);
+      // Slower than the scroll settle window, within the X wait.
+      if (slowContinuation === tab && continuation) await sleep(2500);
       if (failPagination === tab && continuation) {
         return route.fulfill({ status: 429, body: 'rate limited' });
       }
@@ -327,8 +330,8 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
 
   await t.test('combines headline posts and link replies after scrolling both tabs', async () => {
     profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await recentFixture('user-replies-timeline.json') };
-    // Without the article exit, the wait would only end at the 30 second deadline.
-    const response = await fetch(`${base}/recent?hours=1`, { signal: AbortSignal.timeout(20_000) });
+    // Without the article exit, the tab would fail at the X wait deadline.
+    const response = await fetch(`${base}/recent?hours=1`);
     assert.equal(response.status, 200);
     const { posts, complete } = await response.json();
     assert.equal(complete, true);
@@ -419,7 +422,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     profilePages = { posts: await recentFixture('user-originals-timeline.json'), replies: await fixture('user-tweets-no-cursor.json') };
     const response = await recentWithStalledReplies(t);
     assert.equal(response.status, 500);
-    assert.match((await response.json()).error, /Replies tab: no visible posts within 30 seconds: neither the cutoff nor the end of the timeline was reached/);
+    assert.match((await response.json()).error, /Replies tab: no visible posts within 5 seconds: neither the cutoff nor the end of the timeline was reached/);
     assert.equal(await context.pages()[0].locator('article').count(), 0);
   });
 
@@ -427,7 +430,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     profilePages = { posts: await recentFixture('user-originals-timeline.json') };
     const response = await recentWithStalledReplies(t);
     assert.equal(response.status, 500);
-    assert.match((await response.json()).error, /Replies tab: a UserTweets response body did not arrive within 30 seconds/);
+    assert.match((await response.json()).error, /Replies tab: a UserTweets response body did not arrive within 5 seconds/);
   });
 
   for (const [tab, name] of [['posts', 'Posts'], ['replies', 'Replies']]) {
