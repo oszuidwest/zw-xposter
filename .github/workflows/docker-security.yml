@@ -97,7 +97,6 @@ jobs:
           ignore-unfixed: true
           exit-code: '1'
 
-  # Its own check, so a functional failure is not mistaken for a vulnerability.
   integration:
     name: Container integration (${{ matrix.arch }})
     runs-on: ${{ matrix.runner }}
