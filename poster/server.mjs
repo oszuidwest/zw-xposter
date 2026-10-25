@@ -164,7 +164,7 @@ async function getTab() {
 function withoutReplyCard(route) {
   const body = route.request().postDataJSON();
   if (body.variables.reply) body.variables.card_uri = 'tombstone://card';
-  return route.fallback({ postData: JSON.stringify(body) });
+  return route.fallback({ postData: body });
 }
 
 async function screenshot(page, name) {
@@ -598,7 +598,6 @@ async function createReply({ text, inReplyTo, dryRun }, signal) {
     await humanClick(page, box);
     await humanType(page, text);
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-    await settle(1500, 4000);
     await acknowledgeNotice(page);
     throwIfGone();
 
