@@ -13,6 +13,7 @@ import (
 	"github.com/oszuidwest/zw-xposter/internal/config"
 	"github.com/oszuidwest/zw-xposter/internal/notify"
 	"github.com/oszuidwest/zw-xposter/internal/poster"
+	"github.com/oszuidwest/zw-xposter/internal/state"
 	operational "github.com/oszuidwest/zw-xposter/internal/status"
 	"github.com/oszuidwest/zw-xposter/internal/testutil"
 )
@@ -98,4 +99,20 @@ func TestOperationalAlertsFollowFailureAndRecovery(t *testing.T) {
 		check(posterAlert, pollAlert, posterRecovery, pollRecovery)
 		check(posterAlert, pollAlert, posterRecovery, pollRecovery)
 	})
+}
+
+func TestPollAlertsOnceAboutAnUnfinishedArticleAndItsCompletion(t *testing.T) {
+	now := testNow
+	fixture := newPollTest(t, &pollTestOptions{
+		now: func() time.Time { return now },
+		initial: state.Entry{Status: state.StatusRetry, Attempts: 3, LastError: "composer selector broken",
+			NextAttemptAt: testNow.Add(10 * time.Minute)},
+	})
+	fixture.app.startedAt = testNow.Add(-time.Hour + time.Minute)
+	assertMails(t, pollMails(t, fixture))
+	now = testNow.Add(time.Minute)
+	assertMails(t, pollMails(t, fixture), []string{"Article is not complete on X after an hour", "Last error: composer selector broken"})
+	assertMails(t, pollMails(t, fixture))
+	now = testNow.Add(10 * time.Minute)
+	assertMails(t, pollMails(t, fixture), []string{"Article is now complete on X", "Post: " + mainURL})
 }

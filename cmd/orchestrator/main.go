@@ -40,6 +40,8 @@ const (
 	retryInitial     = 2 * time.Minute
 	retryMaximum     = 30 * time.Minute
 	uncertainMinimum = 5 * time.Minute
+	// Report an article still not complete on X this long after it became due.
+	unfinishedAlertAfter = time.Hour
 	// Check this much X history beyond MAX_AGE.
 	recentMargin          = 24 * time.Hour
 	alertCheckInterval    = time.Minute
@@ -68,6 +70,8 @@ type app struct {
 	alerts              *notify.Service
 	startedAt           time.Time
 	posterNotReadySince time.Time
+	// GUIDs reported as unfinished in this run; only the poll goroutine uses it.
+	unfinished map[string]bool
 }
 
 type pollState struct {
@@ -341,7 +345,29 @@ func (a *app) poll(ctx context.Context) error {
 			return err
 		}
 	}
+	a.alertUnfinished(a.now())
 	return nil
+}
+
+// alertUnfinished mails once per serve run about each article not complete on X an hour after it became
+// due and the run started; record mails when it completes. Failing polls raise the stale-poll alert instead.
+func (a *app) alertUnfinished(now time.Time) {
+	if a.startedAt.IsZero() || now.Sub(a.startedAt) < unfinishedAlertAfter {
+		return
+	}
+	for guid := range a.store.Items {
+		entry := a.store.Items[guid]
+		if a.store.Done(guid) || a.unfinished[guid] || now.Sub(dueAt(&entry)) < unfinishedAlertAfter {
+			continue
+		}
+		if a.unfinished == nil {
+			a.unfinished = map[string]bool{}
+		}
+		a.unfinished[guid] = true
+		a.alerts.Notify(notify.Event{Key: "workflow:unfinished:" + guid, Summary: "Article is not complete on X after an hour",
+			Details: fmt.Sprintf("%s\nStatus: %s after %d attempts\nLast error: %s\nCheck X; it may need to be posted or completed by hand.",
+				articleDetails(guid, &entry), entry.Status, entry.Attempts, entry.LastError)})
+	}
 }
 
 // expireUnlisted expires pending entries outside the feed; withdrawn articles must not post.
@@ -539,12 +565,15 @@ func (a *app) recentLookback(items []feed.Item, now time.Time) time.Duration {
 	return lookback
 }
 
-func (a *app) expired(entry *state.Entry, now time.Time) bool {
-	start := entry.PublishedAt
-	if entry.ReplayRequestedAt.After(start) {
-		start = entry.ReplayRequestedAt
+func dueAt(entry *state.Entry) time.Time {
+	if entry.ReplayRequestedAt.After(entry.PublishedAt) {
+		return entry.ReplayRequestedAt
 	}
-	return now.Sub(start) > a.cfg.MaxAge
+	return entry.PublishedAt
+}
+
+func (a *app) expired(entry *state.Entry, now time.Time) bool {
+	return now.Sub(dueAt(entry)) > a.cfg.MaxAge
 }
 
 // uncertainExpired starts the error of an entry that gave up after an uncertain attempt without a
@@ -877,6 +906,10 @@ func (a *app) record(guid string, entry *state.Entry) error {
 	}
 	if event, ok := workflowAlert(guid, &previous, entry); ok {
 		a.alerts.Notify(event)
+	}
+	if entry.Status == state.StatusPosted && a.unfinished[guid] {
+		delete(a.unfinished, guid)
+		a.alerts.Notify(notify.Event{Key: "workflow:unfinished:" + guid, Summary: "Article is now complete on X", Details: articleDetails(guid, entry)})
 	}
 	return nil
 }
