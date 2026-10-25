@@ -71,7 +71,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
   let failImage;
   let failRecovery;
   let misdirectReply;
-  let returningCard;
   let loggedOut;
   let videoStatusRequested;
   let videoProcessing;
@@ -106,7 +105,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     failImage = false;
     failRecovery = false;
     misdirectReply = false;
-    returningCard = false;
     loggedOut = false;
     process.env.ELEVENLABS_API_KEY = 'offline-elevenlabs';
     videoStatusRequested = Promise.withResolvers();
@@ -171,7 +169,9 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     }
     if (url.pathname.endsWith('/CreateTweet')) {
       const page = context.pages()[0];
-      const { text, reply } = request.postDataJSON();
+      const { tweet_text: text, reply, card_uri: card } = request.postDataJSON().variables;
+      // X's own value for a removed preview card; headline posts keep theirs.
+      assert.equal(card, reply ? 'tombstone://card' : undefined);
       if (reply) {
         published.push(text);
         return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ data: { create_tweet: { tweet_results: { result: {
@@ -185,7 +185,7 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
         assert.equal(await page.getByText('Transcripties', { exact: true }).count(), 0);
       }
       if (text === 'Text fallback') assert.equal(await page.locator('[data-testid=attachments] img, [data-testid=attachments] video').count(), 0);
-      published.push(request.postDataJSON().text);
+      published.push(text);
       return route.fulfill({
         contentType: 'application/json',
         body: await fixture(rejectPost ? 'create-tweet-without-id.json' : 'create-tweet-with-id.json'),
@@ -221,8 +221,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
       if (holdPostButton) body = swap(body, '<button data-testid="tweetButton">', '<button data-testid="tweetButton" aria-disabled="true">');
       // Like X, a logged-out page offers a login link instead of the account button.
       if (loggedOut) body = swap(body, '<button data-testid="SideNav_AccountSwitcher_Button">Account</button>', '<a href="/login">Inloggen</a>');
-      // The removed card returns only once Post is pressed, after every earlier check.
-      if (returningCard) body = swap(body, "onclick = () => card.remove();", "onclick = () => { card.remove(); document.querySelector('[data-testid=tweetButton]').onpointerdown = () => document.querySelector('[data-testid=tweetButton]').after(card); };");
       if (failCaptionSelection) body = swap(body, "document.querySelector('#caption-remove').hidden = false;", "document.querySelector('#caption-remove').hidden = true;");
       return route.fulfill({ contentType: 'text/html', body });
     }
@@ -452,17 +450,6 @@ test('poster HTTP workflow with an offline browser', { timeout: 900_000 }, async
     assert.equal(response.status, 200);
     assert.equal((await response.json()).url, 'https://x.com/fixture_account/status/900000000000000602');
     assert.equal(published.at(-1), '👉 Lees het hele verhaal: https://example.invalid/a');
-  });
-
-  await t.test('a preview card that returns while pressing Post stops the reply before the click', async () => {
-    returningCard = true;
-    const before = [...published];
-    const response = await reply({ text: 'Lees: https://example.invalid/a', inReplyTo: parent });
-    const result = await response.json();
-    assert.equal(response.status, 500);
-    assert.equal(result.clicked, false);
-    assert.match(result.error, /link preview card still present before publication/);
-    assert.deepEqual(published, before);
   });
 
   await t.test('a reply that X places under another post is reported as uncertain', async () => {

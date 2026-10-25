@@ -30,16 +30,6 @@
     replyTo = '900000000000000601';
     document.querySelector('[role=dialog]').hidden = false;
   };
-  // Like X, a link typed in a reply loads a preview card whose remove button has no test ID.
-  document.querySelector('[contenteditable]').oninput = (event) => {
-    if (!replyTo || !/https:\/\/\S/.test(event.target.textContent) || document.querySelector('[data-testid="card.wrapper"]')) return;
-    const card = document.createElement('div');
-    card.dataset.testid = 'card.wrapper';
-    card.innerHTML = '<button aria-label="Cardvoorbeeld verwijderen">×</button>';
-    card.querySelector('button').onclick = () => card.remove();
-    // After Post, so a returning card cannot move it.
-    document.querySelector('[data-testid=tweetButton]').after(card);
-  };
   document.querySelector('[data-testid=fileInput]').onchange = async (event) => {
     const file = event.target.files[0];
     const preview = document.createElement(file.type === 'video/mp4' ? 'video' : 'img');
@@ -97,10 +87,10 @@
     }
     await fetch('/i/api/graphql/offline/CreateTweet', {
       method: 'POST',
-      body: JSON.stringify({
-        text: document.querySelector('[contenteditable]').textContent,
+      body: JSON.stringify({ variables: {
+        tweet_text: document.querySelector('[contenteditable]').textContent,
         ...(replyTo && { reply: { in_reply_to_tweet_id: replyTo } }),
-      }),
+      } }),
     });
     document.querySelector('[role=dialog]').remove();
   };
