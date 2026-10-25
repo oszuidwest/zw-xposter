@@ -62,7 +62,6 @@ const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
-const CARD_PREVIEW_REMOVE = new RegExp(xUI.cardPreviewRemovePattern, 'i');
 const STATUS_URL = /^https:\/\/x\.com\/(\w{1,15})\/status\/(\d+)$/;
 
 let context;
@@ -156,7 +155,16 @@ async function getTab() {
     if (extra !== tab) await extra.close().catch(() => {});
   }
   tab.setDefaultTimeout(30_000);
+  await tab.route('**/CreateTweet', withoutReplyCard);
   return tab;
+}
+
+// The headline post already shows the article image. X's composer shows no preview card for an article
+// it has not fetched yet, and X adds one after posting unless the request carries what removing it sends.
+function withoutReplyCard(route) {
+  const body = route.request().postDataJSON();
+  if (body.variables.reply) body.variables.card_uri = 'tombstone://card';
+  return route.fallback({ postData: JSON.stringify(body) });
 }
 
 async function screenshot(page, name) {
@@ -589,32 +597,17 @@ async function createReply({ text, inReplyTo, dryRun }, signal) {
     await pause(500, 1500);
     await humanClick(page, box);
     await humanType(page, text);
-    // The headline post already shows the article image; remove X's preview card, which loads after the link.
-    const card = dialog.locator('[data-testid="card.wrapper"]');
-    if (await card.waitFor({ timeout: 10_000 }).then(() => true, () => false)) {
-      await pause(500, 1500);
-      await humanClick(page, dialog.getByRole('button', { name: CARD_PREVIEW_REMOVE }));
-      // Refocus so Escape can discard the composer during a dry run.
-      await pause(300, 900);
-      await humanClick(page, box);
-    }
     await dialog.locator('[data-testid="tweetButton"]:not([aria-disabled="true"]):not([disabled])').waitFor({ timeout: 60_000 });
-    // Leave time for a late or refetched preview card before the final checks.
     await settle(1500, 4000);
     await acknowledgeNotice(page);
-    // Also checked while pressing Post, as the card can return on the way there.
-    const throwIfUnsafe = async () => {
-      throwIfGone();
-      if (await card.count()) throw new Error('link preview card still present before publication');
-    };
-    await throwIfUnsafe();
+    throwIfGone();
 
     if (dryRun) {
       const file = await screenshot(page, 'dry-run-reply');
       await discardComposer(page, dialog);
       return { dryRun: true, screenshot: file };
     }
-    return await publish(page, dialog, signal, { throwIfGone: throwIfUnsafe, clicked: () => { clicked = true; }, inReplyTo: id });
+    return await publish(page, dialog, signal, { throwIfGone, clicked: () => { clicked = true; }, inReplyTo: id });
   } catch (cause) {
     throw await publicationError(page, cause, { clicked, recover: () => resetComposer(page, throwIfGone) });
   } finally {
