@@ -22,6 +22,8 @@ services:
       - POST_DELAY
       - MAX_AGE
       - DRY_RUN
+      - LINK_IN_REPLY
+      - REPLY_TEXT
       - HEARTBEAT_URL
       - POSTER_NOT_READY_AFTER
       - POLL_STALE_AFTER
