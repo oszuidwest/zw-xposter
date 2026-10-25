@@ -46,6 +46,8 @@ docker compose logs --tail=200 xposter
 
 Expired session: update `X_AUTH_TOKEN`, then run `docker compose up -d --force-recreate xposter`. Use `HEARTBEAT_URL` for downtime alerts; unhealthy containers do not restart automatically.
 
+An article that is still not complete on X an hour after it became due (or after a restart) raises one alert per run, and another if it completes in the same run. This covers failures that do not stop polling, such as a changed X interface or an unconfirmed headline.
+
 ## Development
 
 ```sh
