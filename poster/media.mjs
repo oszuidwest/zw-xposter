@@ -124,7 +124,7 @@ async function uploadMedia(page, dialog, file, {
   }
 }
 
-export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = () => {} } = {}) {
+export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = () => {}, timeoutMs = 60_000 } = {}) {
   if (!srt) throw new Error('video subtitles are required');
   throwIfCancelled();
   await dialog.getByRole('button', { name: CAPTION_UPLOAD }).click();
@@ -135,11 +135,11 @@ export async function uploadSubtitles(page, dialog, srt, { throwIfCancelled = ()
     // X's web client categorizes application/x-subrip as tweet_image and rejects it.
     name: 'video.nl.srt', mimeType: 'text/plain', buffer: Buffer.from(srt),
   });
-  await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: 60_000 });
+  await captions.getByRole('button', { name: CAPTION_REMOVE }).waitFor({ timeout: timeoutMs });
   throwIfCancelled();
   await captions.getByRole('button', { name: CAPTION_DONE }).click();
   // Selection only: X uploads the SRT after the Post click.
-  await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: 60_000 });
+  await dialog.getByText(CAPTION_ATTACHED).waitFor({ timeout: timeoutMs });
   throwIfCancelled();
 }
 

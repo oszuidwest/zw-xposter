@@ -91,6 +91,8 @@ function random(min, max) {
 
 // Only the offline browser test switches human pacing off; any other value keeps it.
 const PACING = process.env.POSTER_PACING === '0' ? 0 : 1;
+// Deadline for the X waits that failure tests run into; the offline browser test shortens it.
+const X_WAIT_MS = Number(process.env.POSTER_X_WAIT_MS) || 30_000;
 
 function pause(minMs, maxMs) {
   return sleep(random(minMs, maxMs) * PACING);
@@ -378,7 +380,7 @@ function ownStatusID(url) {
 async function resetComposer(page, throwIfGone) {
   throwIfGone();
   await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-  await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor();
+  await page.locator('[data-testid="SideNav_AccountSwitcher_Button"]').waitFor({ timeout: X_WAIT_MS });
   if (await page.locator(`[role="dialog"]:visible, ${ANY_ATTACHMENT}`).count()) {
     throw new Error('composer recovery could not be verified');
   }
@@ -495,7 +497,7 @@ async function createPost({ text, image, dryRun, skipCaptions }, signal, videoFi
         await acknowledgeNotice(page);
         if (srt) {
           try {
-            await mediaOperation('captions', () => uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone }));
+            await mediaOperation('captions', () => uploadSubtitles(page, dialog, srt, { throwIfCancelled: throwIfGone, timeoutMs: 2 * X_WAIT_MS }));
           } catch (err) {
             if (err.stage !== 'captions') throw err;
             caption.captions = 'none';
@@ -657,12 +659,12 @@ async function recentPosts(hours) {
   };
   const finishRequests = async (timeline) => {
     if (timeline.failed()) return;
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + X_WAIT_MS;
     while (inFlight.size || pending) {
       if (Date.now() >= deadline) {
         timeline.fail(pending
-          ? 'a UserTweets response body did not arrive within 30 seconds'
-          : 'a UserTweets request did not finish within 30 seconds');
+          ? `a UserTweets response body did not arrive within ${X_WAIT_MS / 1000} seconds`
+          : `a UserTweets request did not finish within ${X_WAIT_MS / 1000} seconds`);
         return;
       }
       await sleep(100);
@@ -671,9 +673,9 @@ async function recentPosts(hours) {
   const readTab = async (timeline) => {
     const done = () => timeline.complete() || timeline.failed();
     // An empty tab never shows an article, so a complete or failed timeline also ends the wait.
-    const deadline = Date.now() + 30_000;
+    const deadline = Date.now() + X_WAIT_MS;
     while (!done() && !(await page.locator('article').first().isVisible())) {
-      if (Date.now() >= deadline) timeline.fail(`no visible posts within 30 seconds: ${timeline.incompleteReason()}`);
+      if (Date.now() >= deadline) timeline.fail(`no visible posts within ${X_WAIT_MS / 1000} seconds: ${timeline.incompleteReason()}`);
       else await sleep(100);
     }
     await settle(1500, 3000);
