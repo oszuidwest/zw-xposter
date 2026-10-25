@@ -1,6 +1,7 @@
 package main
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"html"
@@ -941,10 +942,12 @@ func TestReplayRejectsWithoutChangingState(t *testing.T) {
 		name      string
 		published time.Time
 		guid      string
+		status    string
 		wantErr   string
 	}{
 		{name: "GUID outside current feed", guid: "guid-not-in-feed", wantErr: "current feed"},
 		{name: "article beyond poster lookback", published: testNow.Add(-poster.MaxLookback - time.Minute), guid: "guid-1", wantErr: maxLookbackHours},
+		{name: "confirmed headline awaiting link reply", guid: "guid-1", status: state.StatusRetry, wantErr: "https://x.invalid/fixture/status/stored"},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -952,7 +955,7 @@ func TestReplayRejectsWithoutChangingState(t *testing.T) {
 			fixture.app.store.SetAt(tt.guid, &state.Entry{
 				Title:    "Stored article",
 				Link:     "https://example.invalid/stored",
-				Status:   state.StatusPosted,
+				Status:   cmp.Or(tt.status, state.StatusPosted),
 				PostURL:  "https://x.invalid/fixture/status/stored",
 				Attempts: 2,
 			}, testNow.Add(-time.Hour))

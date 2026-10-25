@@ -263,6 +263,10 @@ func (a *app) replay(ctx context.Context, guid string) error {
 	if !ok {
 		return fmt.Errorf("replay GUID %q is not present in state", guid)
 	}
+	// A replay forgets the headline, and dedupe cannot see a headline without its article link.
+	if entry.PostURL != "" && entry.Status != state.StatusPosted {
+		return fmt.Errorf("cannot replay GUID %q: its headline was confirmed at %s, but the article is not complete; check X and, if the article link is missing, add it as a reply (deleting the headline alone does not enable replay)", guid, entry.PostURL)
+	}
 	items, err := feed.Fetch(ctx, a.http, a.cfg.FeedURL)
 	if err != nil {
 		return fmt.Errorf("fetch current feed for replay: %w", err)
