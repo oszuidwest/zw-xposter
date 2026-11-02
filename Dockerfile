@@ -1,7 +1,8 @@
 # syntax=docker/dockerfile:1
 FROM --platform=$BUILDPLATFORM golang:1.27.3-alpine3.24 AS go-build
 WORKDIR /src
-COPY go.mod ./
+COPY go.mod go.sum ./
+RUN go mod download
 COPY cmd/orchestrator/ ./cmd/orchestrator/
 COPY internal/ ./internal/
 ARG TARGETOS

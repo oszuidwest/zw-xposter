@@ -9,6 +9,8 @@ import (
 	"sync"
 	"time"
 
+	graphmail "github.com/oszuidwest/zw-graphmail"
+
 	"github.com/oszuidwest/zw-xposter/internal/config"
 )
 
@@ -22,7 +24,7 @@ type Event struct {
 }
 
 type mailer interface {
-	SendMail(context.Context, []string, string, string) error
+	Send(context.Context, *graphmail.Message) error
 }
 
 type message struct {
@@ -48,7 +50,17 @@ func New(cfg *config.GraphConfig, reminder time.Duration) *Service {
 	if !cfg.Complete() {
 		return nil
 	}
-	return newService(newGraphClient(cfg), cfg.Recipients, reminder)
+	client, err := graphmail.New(graphmail.Config{
+		TenantID:     cfg.TenantID,
+		ClientID:     cfg.ClientID,
+		ClientSecret: cfg.ClientSecret,
+		From:         cfg.FromAddress,
+	})
+	if err != nil { // Complete already checks every field graphmail needs.
+		slog.Error("email alerting disabled", "error", err)
+		return nil
+	}
+	return newService(client, cfg.Recipients, reminder)
 }
 
 func newService(m mailer, recipients []string, reminder time.Duration) *Service {
@@ -140,7 +152,7 @@ func (s *Service) enqueueLocked(mail message) bool {
 func (s *Service) deliver() {
 	for job := range s.jobs {
 		ctx, cancel := context.WithTimeout(context.Background(), sendTimeout)
-		err := s.mailer.SendMail(ctx, s.recipients, job.subject, job.body)
+		err := s.mailer.Send(ctx, &graphmail.Message{To: s.recipients, Subject: job.subject, Body: job.body})
 		cancel()
 		if err != nil {
 			slog.Error("alert email failed", "subject", job.subject, "error", err)
