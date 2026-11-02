@@ -23,6 +23,7 @@ func graphMailHandler(t *testing.T, receive func(subject, body string)) http.Han
 	return func(w http.ResponseWriter, r *http.Request) {
 		switch r.Host {
 		case "login.microsoftonline.com":
+			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"access_token":"offline-token","expires_in":3600}`)
 		case "graph.microsoft.com":
 			var mail struct {

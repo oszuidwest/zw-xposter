@@ -2,21 +2,26 @@ package notify
 
 import (
 	"context"
+	"slices"
 	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
+
+	graphmail "github.com/oszuidwest/zw-graphmail"
 
 	"github.com/oszuidwest/zw-xposter/internal/config"
 )
 
 type recordingMailer struct {
 	messages []message
+	to       []string
 }
 
 // The service has one writer; tests read only after synctest.Wait or Close.
-func (m *recordingMailer) SendMail(_ context.Context, _ []string, subject, body string) error {
-	m.messages = append(m.messages, message{subject: subject, body: body})
+func (m *recordingMailer) Send(_ context.Context, mail *graphmail.Message) error {
+	m.messages = append(m.messages, message{subject: mail.Subject, body: mail.Body})
+	m.to = mail.To
 	return nil
 }
 
@@ -76,6 +81,9 @@ func TestServiceNotifyDoesNotCreateConditionState(t *testing.T) {
 		if got := mailer.subjects(); len(got) != 1 || got[0] != "[ALERT] Article was missed - ZuidWest X Poster" {
 			t.Fatalf("one-time notification subjects = %v", got)
 		}
+		if !slices.Equal(mailer.to, []string{"ops@example.com"}) {
+			t.Errorf("recipients = %v, want [ops@example.com]", mailer.to)
+		}
 	})
 }
 
@@ -87,6 +95,12 @@ func TestServiceDisabledWithPartialConfiguration(t *testing.T) {
 	service.Alert(Event{Key: "condition", Summary: "Condition"})
 	service.Notify(Event{Key: "workflow:event", Summary: "Workflow event"})
 	service.Close()
+}
+
+func TestFormatMessageIncludesConditionKey(t *testing.T) {
+	if !strings.Contains(formatMessage("ALERT", Event{Key: "key", Summary: "summary"}, time.Time{}).body, "Condition: key") {
+		t.Error("formatted message omits condition key")
+	}
 }
 
 func newTestService() (*Service, *recordingMailer) {
