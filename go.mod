@@ -5,6 +5,6 @@ go 1.27.4
 // npm packages under node_modules may contain Go sources.
 ignore ./poster/node_modules
 
-require github.com/oszuidwest/zw-graphmail v0.0.2
+require github.com/oszuidwest/zw-graphmail v0.0.3
 
-require golang.org/x/oauth2 v0.37.0 // indirect
+require golang.org/x/oauth2 v0.38.0 // indirect

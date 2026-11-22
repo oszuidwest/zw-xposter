@@ -1,4 +1,4 @@
-github.com/oszuidwest/zw-graphmail v0.0.2 h1:SIWjdgcgX9uRnQpDKnOYb3gQOvH2KuIbdAgBiG2Swis=
-github.com/oszuidwest/zw-graphmail v0.0.2/go.mod h1:WUtF7zCTpCQ+rbKoUjYvSIj5tQ2bILMHIOctWuwvPkw=
-golang.org/x/oauth2 v0.37.0 h1:JUlcxA8oAtauLfiH8FX2/FkAWHAdi0QtGCGc+hofE98=
-golang.org/x/oauth2 v0.37.0/go.mod h1:IxwZNxUULJmpBFf9K/9NTMSIfZZuvuTy1gGxhigP/58=
+github.com/oszuidwest/zw-graphmail v0.0.3 h1:LhpDTxfNW8/ryFiPTmsabi6dbEL/iWelbeFSiIr5MQY=
+github.com/oszuidwest/zw-graphmail v0.0.3/go.mod h1:lrcxoDZRraYcOOPEn+bByvAQDHhdMi+UwamPknVSn1c=
+golang.org/x/oauth2 v0.38.0 h1:uW7XQbcu1eoiQS7uMJvLOjPMl04bTbmY1VeRPxvbspI=
+golang.org/x/oauth2 v0.38.0/go.mod h1:IxwZNxUULJmpBFf9K/9NTMSIfZZuvuTy1gGxhigP/58=
