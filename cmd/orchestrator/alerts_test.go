@@ -50,7 +50,7 @@ func TestOperationalAlertsCoverOneOutageWithItsCause(t *testing.T) {
 	original := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = original })
 	synctest.Test(t, func(t *testing.T) {
-		ready, feedUp := false, true
+		ready, feedUp, readyDelay := false, true, time.Duration(0)
 		var mails []string
 		graph := graphMailHandler(t, func(subject, body string) { mails = append(mails, subject+"\n"+body) })
 		// In-memory HTTP keeps all requests inside the synctest bubble.
@@ -58,6 +58,7 @@ func TestOperationalAlertsCoverOneOutageWithItsCause(t *testing.T) {
 			switch r.Host {
 			case "poster.invalid":
 				testutil.Equal(t, r.URL.Path, "/ready")
+				time.Sleep(readyDelay)
 				if !ready {
 					http.Error(w, `{"loggedIn":false}`, http.StatusServiceUnavailable)
 					return
@@ -145,7 +146,12 @@ func TestOperationalAlertsCoverOneOutageWithItsCause(t *testing.T) {
 		feedUp = true
 		poll("")
 		check()
-		ready = true
+		// Polls that turn stale during a slow readiness check keep the alert open.
+		time.Sleep(10*time.Minute - time.Second)
+		ready, readyDelay = true, 2*time.Second
+		check()
+		readyDelay = 0
+		poll("")
 		check([]string{recovered})
 	})
 }

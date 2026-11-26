@@ -964,10 +964,11 @@ func (a *app) monitorOperationalAlerts(ctx context.Context) {
 }
 
 func (a *app) evaluateOperationalAlerts(ctx context.Context) {
-	now := a.now()
 	checkCtx, cancel := context.WithTimeout(ctx, operationalTimeout)
 	err := a.poster.Ready(checkCtx)
 	cancel()
+	// Judge freshness after the check, which can take up to operationalTimeout.
+	now := a.now()
 	var summaries, details []string
 	if err == nil {
 		a.posterNotReadySince = time.Time{}
