@@ -52,7 +52,9 @@ const DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const DEBUG_RETENTION_MS = 14 * 24 * 3600_000;
 const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
 const LOGIN_RETRY_MS = 30 * 60_000;
-const LOGIN_CODE_STOP = 'X asks for a code after the password, so password login is off until the session is back; set a new X_AUTH_TOKEN and recreate the container';
+// Each password attempt that ends on X's code screen makes X mail another code.
+const LOGIN_CODE_RETRY_MS = 6 * 3600_000;
+const LOGIN_CODE_ADVICE = 'X asks for a code after the password; set a new X_AUTH_TOKEN and recreate the container';
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
 // Reserve response headroom within the Go client's 5/30-minute timeouts;
@@ -71,7 +73,6 @@ let tab;
 let loggedIn = false;
 let sessionCheckedAt = 0;
 let loginFailedAt = 0;
-// X mailed a login code; every further password attempt mails another.
 let loginCodeRequested = false;
 let shuttingDown = false;
 
@@ -325,7 +326,7 @@ async function login(page) {
   } catch {
     if (await page.getByText(LOGIN_CODE).first().isVisible().catch(() => false)) {
       loginCodeRequested = true;
-      throw new Error(`${LOGIN_CODE_STOP} (screenshot: ${await screenshot(page, 'login-code')})`);
+      throw new Error(`${LOGIN_CODE_ADVICE} (screenshot: ${await screenshot(page, 'login-code')})`);
     }
     throw new Error(`login did not reach /home: ${await pageMessage(page)} (screenshot: ${await screenshot(page, 'login')})`);
   }
@@ -336,8 +337,8 @@ async function ensureLoggedIn(page) {
   if (await checkSession(page)) {
     return;
   }
-  // X_AUTH_TOKEN already failed before the code screen and cannot change without a recreate.
-  if (loginCodeRequested) throw new Error(LOGIN_CODE_STOP);
+  // The code screen comes only after X_AUTH_TOKEN failed or was unset, and a new token needs a recreate.
+  if (loginCodeRequested) throwIfLoginBlocked();
   if (AUTH_TOKEN) {
     log('restoring session from X_AUTH_TOKEN');
     await context.addCookies([{
@@ -356,8 +357,7 @@ async function ensureLoggedIn(page) {
     log('X_AUTH_TOKEN is not (or no longer) valid');
   }
   if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
-  const wait = loginBlockedUntil() - Date.now();
-  if (wait > 0) throw new Error(`logged out; previous login failed, next attempt in ${Math.ceil(wait / 60_000)} min`);
+  throwIfLoginBlocked();
   try {
     await login(page);
     if (!(await checkSession(page))) throw new Error(`still logged out after login (screenshot: ${await screenshot(page, 'session')})`);
@@ -368,7 +368,15 @@ async function ensureLoggedIn(page) {
 }
 
 function loginBlockedUntil() {
-  return loginFailedAt > 0 ? loginFailedAt + LOGIN_RETRY_MS : 0;
+  if (!loginFailedAt) return 0;
+  return loginFailedAt + (loginCodeRequested ? LOGIN_CODE_RETRY_MS : LOGIN_RETRY_MS);
+}
+
+function throwIfLoginBlocked() {
+  const wait = loginBlockedUntil() - Date.now();
+  if (wait <= 0) return;
+  const reason = loginCodeRequested ? LOGIN_CODE_ADVICE : 'previous login failed';
+  throw new Error(`logged out; ${reason}, next attempt in ${Math.ceil(wait / 60_000)} min`);
 }
 
 async function runSessionChecks() {
@@ -377,7 +385,8 @@ async function runSessionChecks() {
     if (shuttingDown) return;
     await exclusive(async () => {
       // Checked in the queue, as a login may have failed while this waited.
-      if (loginBlockedUntil() > Date.now()) {
+      // During the long code wait the check still runs: ensureLoggedIn only looks for a returned session then.
+      if (loginBlockedUntil() > Date.now() && !loginCodeRequested) {
         log('background session check skipped during login backoff');
         return;
       }

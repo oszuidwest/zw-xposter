@@ -16,7 +16,7 @@ test('media upload banners match both languages with or without a period', () =>
   assert.equal(pattern.test(''), false);
 });
 
-test('the login code screen matches the heading X showed in production', () => {
+test('the login code pattern matches only the code screen heading', () => {
   const pattern = new RegExp(xUI.loginCodePattern, 'i');
   assert.equal(pattern.test('We hebben je een beveiligingscode gestuurd'), true);
   assert.equal(pattern.test('We sent you a code'), true);
