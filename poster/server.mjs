@@ -323,7 +323,7 @@ async function login(page) {
   try {
     await page.waitForURL(/x\.com\/home/, { timeout: 30_000 });
   } catch {
-    if (await challenge.or(page.getByText(LOGIN_CODE)).first().isVisible()) {
+    if (await page.getByText(LOGIN_CODE).first().isVisible()) {
       loginCodeRequested = true;
       throw new Error(`${LOGIN_CODE_STOP} (screenshot: ${await screenshot(page, 'login')})`);
     }
