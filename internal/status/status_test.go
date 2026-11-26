@@ -2,8 +2,10 @@ package status
 
 import (
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -21,6 +23,24 @@ func TestHealthTracksSuccessfulPollAge(t *testing.T) {
 	assertHealthStatus(t, tracker, http.StatusOK)
 	tracker.RecordPoll(now.Add(-7 * time.Minute))
 	assertHealthStatus(t, tracker, http.StatusServiceUnavailable)
+}
+
+func TestPollErrorLastsUntilTheNextSuccessfulPoll(t *testing.T) {
+	tracker := New(6 * time.Minute)
+	status := func() string {
+		recorder := httptest.NewRecorder()
+		tracker.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/status", http.NoBody))
+		return recorder.Body.String()
+	}
+	tracker.RecordPollError(errors.New("first"))
+	tracker.RecordPollError(errors.New("second"))
+	if got := status(); !strings.Contains(got, `"lastPollError":"second"`) {
+		t.Fatalf("status = %s, want lastPollError second", got)
+	}
+	tracker.RecordPoll(time.Now())
+	if got := status(); strings.Contains(got, "lastPollError") {
+		t.Fatalf("status after success = %s, want no lastPollError", got)
+	}
 }
 
 func TestStatusReportsWorkflowProjection(t *testing.T) {

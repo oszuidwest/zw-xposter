@@ -20,6 +20,7 @@ type Item struct {
 // Snapshot is the operator-facing state returned by /status.
 type Snapshot struct {
 	LastSuccessfulPoll   *time.Time `json:"lastSuccessfulPoll"`
+	LastPollError        string     `json:"lastPollError,omitempty"`
 	LastSuccessfulXCheck *time.Time `json:"lastSuccessfulCompleteXCheck"`
 	Retry                int        `json:"retry"`
 	Uncertain            int        `json:"uncertain"`
@@ -46,6 +47,14 @@ func (t *Tracker) RecordPoll(at time.Time) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	t.snapshot.LastSuccessfulPoll = &at
+	t.snapshot.LastPollError = ""
+}
+
+// RecordPollError records why the latest poll failed, until the next successful poll.
+func (t *Tracker) RecordPollError(err error) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.snapshot.LastPollError = err.Error()
 }
 
 // RecordXCheck records a successful complete duplicate check.
