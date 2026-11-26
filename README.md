@@ -44,7 +44,7 @@ X uploads SRT captions after the Post click; `text/plain` selects its `subtitles
 docker compose logs --tail=200 xposter
 ```
 
-Expired session: update `X_AUTH_TOKEN`, then run `docker compose up -d --force-recreate xposter`. Use `HEARTBEAT_URL` for downtime alerts; unhealthy containers do not restart automatically.
+Expired session: update `X_AUTH_TOKEN`, then run `docker compose up -d --force-recreate xposter`. When X asks for a code after the password, the poster stops password logins until that recreate, because each attempt makes X send another code; `/ready` then shows `"loginCodeRequested": true`. Use `HEARTBEAT_URL` for downtime alerts; unhealthy containers do not restart automatically.
 
 An article that is still not complete on X an hour after it became due (or after a restart) raises one alert per run, and another if it completes in the same run. This covers failures that do not stop polling, such as a changed X interface or an unconfirmed headline.
 

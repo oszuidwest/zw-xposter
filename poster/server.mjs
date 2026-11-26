@@ -52,6 +52,7 @@ const DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const DEBUG_RETENTION_MS = 14 * 24 * 3600_000;
 const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
 const LOGIN_RETRY_MS = 30 * 60_000;
+const LOGIN_CODE_STOP = 'X asks for a code after the password, so password login is stopped; set a new X_AUTH_TOKEN and recreate the container';
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
 // Reserve response headroom within the Go client's 5/30-minute timeouts;
@@ -59,6 +60,7 @@ const MAX_RECENT_HOURS = 336;
 const POST_TIMEOUT_MS = 4 * 60_000;
 const VIDEO_POST_TIMEOUT_MS = 24 * 60_000;
 const COOKIE_REFUSAL = new RegExp(xUI.cookieRefusalPattern, 'i');
+const LOGIN_CODE = new RegExp(xUI.loginCodePattern, 'i');
 const LOGIN_ERROR = new RegExp(xUI.loginErrorPattern, 'i');
 const NOTICE_ACKNOWLEDGE = new RegExp(xUI.noticeAcknowledgePattern, 'i');
 const MEDIA_UPLOAD_FAILED = new RegExp(xUI.mediaUploadFailedPattern, 'i');
@@ -69,6 +71,8 @@ let tab;
 let loggedIn = false;
 let sessionCheckedAt = 0;
 let loginFailedAt = 0;
+// X asked for a code after the password. Retrying only mails another code; a new token and a restart recover.
+let loginCodeRequested = false;
 let shuttingDown = false;
 
 // Serialize browser work so session checks and posts cannot navigate over each other.
@@ -266,7 +270,10 @@ async function checkSession(page) {
     loggedIn = active;
     sessionCheckedAt = Date.now();
   }
-  if (active) loginFailedAt = 0;
+  if (active) {
+    loginFailedAt = 0;
+    loginCodeRequested = false;
+  }
   return active;
 }
 
@@ -316,6 +323,10 @@ async function login(page) {
   try {
     await page.waitForURL(/x\.com\/home/, { timeout: 30_000 });
   } catch {
+    if (await challenge.or(page.getByText(LOGIN_CODE)).first().isVisible()) {
+      loginCodeRequested = true;
+      throw new Error(`${LOGIN_CODE_STOP} (screenshot: ${await screenshot(page, 'login')})`);
+    }
     throw new Error(`login did not reach /home: ${await pageMessage(page)} (screenshot: ${await screenshot(page, 'login')})`);
   }
   log('logged in');
@@ -343,6 +354,7 @@ async function ensureLoggedIn(page) {
     log('X_AUTH_TOKEN is not (or no longer) valid');
   }
   if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
+  if (loginCodeRequested) throw new Error(LOGIN_CODE_STOP);
   const wait = loginBlockedUntil() - Date.now();
   if (wait > 0) throw new Error(`logged out; previous login failed, next attempt in ${Math.ceil(wait / 60_000)} min`);
   try {
@@ -752,7 +764,7 @@ export const server = http.createServer(async (req, res) => {
       return send(res, 200, {});
     }
     if (req.method === 'GET' && url.pathname === '/ready') {
-      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil() });
+      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil(), loginCodeRequested });
       return send(res, status.ready ? 200 : 503, status.body);
     }
     if (req.method === 'GET' && url.pathname === '/recent') {
