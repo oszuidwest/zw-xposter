@@ -43,8 +43,9 @@ docker run --rm --network none --shm-size=1g \
 # Exercise the HTTP-to-browser workflow against local, intercepted X responses.
 docker run --rm --network none --shm-size=1g \
     -v "$root/poster/browser.integration.mjs:/app/poster/browser.integration.mjs:ro" \
+    -v "$root/poster/login.integration.mjs:/app/poster/login.integration.mjs:ro" \
     -v "$root/testdata/contract:/app/testdata/contract:ro" \
-    "$image" node --test browser.integration.mjs
+    "$image" node --test browser.integration.mjs login.integration.mjs
 wait "$entrypoint_tests"
 
 # No automatic initialization or masking of CLI exit codes.
