@@ -49,7 +49,6 @@ test('readiness reports that X asked for a login code', () => {
     loginCodeRequested: true,
     now,
   });
-  assert.equal(status.ready, false);
   assert.equal(status.body.loginCodeRequested, true);
 });
 

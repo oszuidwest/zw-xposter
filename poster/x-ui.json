@@ -1,6 +1,6 @@
 {
   "cookieRefusalPattern": "Refuse non-essential cookies|Niet-essentiële cookies weigeren",
-  "loginCodePattern": "^We hebben je een (beveiligings|bevestigings)code gestuurd$|^We sent you a (verification |confirmation )?code$",
+  "loginCodePattern": "^(We hebben je een beveiligingscode gestuurd|We sent you a code)$",
   "loginErrorPattern": "beperkt|restricted|limit|later|onjuist|wrong|incorrect|fout|error",
   "noticeAcknowledgePattern": "^(Got it|Begrepen)$",
   "mediaUploadFailedPattern": "^(Some of your media failed to upload|Een deel van je media kon niet worden geüpload)\\.?$",

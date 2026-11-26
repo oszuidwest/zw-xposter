@@ -10,7 +10,7 @@ export function sessionCheckDelay(random = Math.random) {
 }
 
 // blockedUntil is the end of the login backoff, or 0 without one.
-export function sessionHealth({ loggedIn, checkedAt, blockedUntil, loginCodeRequested = false, now = Date.now() }) {
+export function sessionHealth({ loggedIn, checkedAt, blockedUntil, loginCodeRequested, now = Date.now() }) {
   const loginBlocked = blockedUntil > now;
   const recent = checkedAt > 0 && now - checkedAt <= SESSION_CHECK_MAX_AGE_MS;
 

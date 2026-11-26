@@ -52,7 +52,7 @@ const DEBUG_DIR = path.join(DATA_DIR, 'debug');
 const DEBUG_RETENTION_MS = 14 * 24 * 3600_000;
 const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
 const LOGIN_RETRY_MS = 30 * 60_000;
-const LOGIN_CODE_STOP = 'X asks for a code after the password, so password login is stopped; set a new X_AUTH_TOKEN and recreate the container';
+const LOGIN_CODE_STOP = 'X asks for a code after the password, so password login is off until the session is back; set a new X_AUTH_TOKEN and recreate the container';
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
 // Reserve response headroom within the Go client's 5/30-minute timeouts;
@@ -71,7 +71,7 @@ let tab;
 let loggedIn = false;
 let sessionCheckedAt = 0;
 let loginFailedAt = 0;
-// X asked for a code after the password. Retrying only mails another code; a new token and a restart recover.
+// X mailed a login code; every further password attempt mails another.
 let loginCodeRequested = false;
 let shuttingDown = false;
 
@@ -323,9 +323,9 @@ async function login(page) {
   try {
     await page.waitForURL(/x\.com\/home/, { timeout: 30_000 });
   } catch {
-    if (await page.getByText(LOGIN_CODE).first().isVisible()) {
+    if (await page.getByText(LOGIN_CODE).first().isVisible().catch(() => false)) {
       loginCodeRequested = true;
-      throw new Error(`${LOGIN_CODE_STOP} (screenshot: ${await screenshot(page, 'login')})`);
+      throw new Error(`${LOGIN_CODE_STOP} (screenshot: ${await screenshot(page, 'login-code')})`);
     }
     throw new Error(`login did not reach /home: ${await pageMessage(page)} (screenshot: ${await screenshot(page, 'login')})`);
   }
@@ -336,6 +336,8 @@ async function ensureLoggedIn(page) {
   if (await checkSession(page)) {
     return;
   }
+  // X_AUTH_TOKEN already failed before the code screen and cannot change without a recreate.
+  if (loginCodeRequested) throw new Error(LOGIN_CODE_STOP);
   if (AUTH_TOKEN) {
     log('restoring session from X_AUTH_TOKEN');
     await context.addCookies([{
@@ -354,7 +356,6 @@ async function ensureLoggedIn(page) {
     log('X_AUTH_TOKEN is not (or no longer) valid');
   }
   if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
-  if (loginCodeRequested) throw new Error(LOGIN_CODE_STOP);
   const wait = loginBlockedUntil() - Date.now();
   if (wait > 0) throw new Error(`logged out; previous login failed, next attempt in ${Math.ceil(wait / 60_000)} min`);
   try {

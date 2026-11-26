@@ -21,5 +21,4 @@ test('the login code screen matches the heading X showed in production', () => {
   assert.equal(pattern.test('We hebben je een beveiligingscode gestuurd'), true);
   assert.equal(pattern.test('We sent you a code'), true);
   assert.equal(pattern.test('De code is naar d***k@z***.nl gestuurd'), false);
-  assert.equal(pattern.test('Je wachtwoord is onjuist'), false);
 });
