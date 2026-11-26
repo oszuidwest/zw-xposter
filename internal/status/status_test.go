@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -26,14 +27,19 @@ func TestHealthTracksSuccessfulPollAge(t *testing.T) {
 
 func TestPollErrorLastsUntilTheNextSuccessfulPoll(t *testing.T) {
 	tracker := New(6 * time.Minute)
+	status := func() string {
+		recorder := httptest.NewRecorder()
+		tracker.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/status", http.NoBody))
+		return recorder.Body.String()
+	}
 	tracker.RecordPollError(errors.New("first"))
 	tracker.RecordPollError(errors.New("second"))
-	if got := tracker.Snapshot().LastPollError; got != "second" {
-		t.Fatalf("LastPollError = %q, want second", got)
+	if got := status(); !strings.Contains(got, `"lastPollError":"second"`) {
+		t.Fatalf("status = %s, want lastPollError second", got)
 	}
 	tracker.RecordPoll(time.Now())
-	if got := tracker.Snapshot().LastPollError; got != "" {
-		t.Fatalf("LastPollError after success = %q, want empty", got)
+	if got := status(); strings.Contains(got, "lastPollError") {
+		t.Fatalf("status after success = %s, want no lastPollError", got)
 	}
 }
 

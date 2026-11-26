@@ -995,10 +995,11 @@ func (a *app) evaluateOperationalAlerts(ctx context.Context) {
 
 	switch {
 	case len(summaries) > 0:
-		// A condition that starts during an active alert shows up in its reminder.
+		// A condition that starts during an active alert shows up in its reminder, if it still holds then.
 		a.alerts.Alert(notify.Event{Key: operationalKey, Summary: strings.Join(summaries, "; "), Details: strings.Join(details, "\n")})
-	case err == nil:
-		// A poster that is not ready keeps an active alert open, also before its own threshold.
+	case err == nil && snapshot.LastSuccessfulPoll != nil:
+		// Recovery needs a ready poster and a successful poll; one that is not ready keeps the alert open
+		// also before its own threshold.
 		a.alerts.Resolve(notify.Event{
 			Key:     operationalKey,
 			Summary: "Poster and polling recovered",

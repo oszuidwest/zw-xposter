@@ -113,15 +113,21 @@ func TestOperationalAlertsCoverOneOutageWithItsCause(t *testing.T) {
 		}
 		const recovered = "[RECOVERED] Poster and polling recovered"
 
-		// The poster fails first; stale polls join the same alert.
-		poll("")
+		// The poster fails first; stale polls join the same alert and its reminder.
 		check()
 		time.Sleep(5*time.Minute - time.Nanosecond)
 		check()
 		time.Sleep(time.Nanosecond)
 		check([]string{"[ALERT] Poster is not ready", `Error: poster readiness returned 503 Service Unavailable: {"loggedIn":false}`})
+		ready = true
+		check() // No poll has succeeded since the start.
+		ready = false
+		check()
 		time.Sleep(5 * time.Minute)
 		check()
+		time.Sleep(24 * time.Hour)
+		check([]string{"[REMINDER] Poster is not ready; Orchestrator polls are stale",
+			"The poster has not been ready since 2000-01-01T00:05:00Z.", "\nNo successful poll since 2000-01-01T00:00:00Z."})
 		ready = true
 		check()
 		poll("")
