@@ -50,8 +50,8 @@ const (
 	// Must match container/healthcheck.mjs.
 	statusAddr = "127.0.0.1:8080"
 
-	posterNotReadyKey = "poster:not-ready"
-	pollStaleKey      = "orchestrator:poll-stale"
+	// One key per outage: a logged-out poster also stalls every poll that needs X.
+	operationalKey = "orchestrator:operational"
 )
 
 type options struct {
@@ -218,6 +218,7 @@ func (a *app) serve(ctx context.Context, stop context.CancelFunc) error {
 
 func (a *app) pollAndReport(ctx context.Context) error {
 	if err := a.poll(ctx); err != nil {
+		a.status.RecordPollError(err)
 		return err
 	}
 	a.status.RecordPoll(a.now())
@@ -967,21 +968,15 @@ func (a *app) evaluateOperationalAlerts(ctx context.Context) {
 	checkCtx, cancel := context.WithTimeout(ctx, operationalTimeout)
 	err := a.poster.Ready(checkCtx)
 	cancel()
+	var summaries, details []string
 	if err == nil {
 		a.posterNotReadySince = time.Time{}
-		a.alerts.Resolve(notify.Event{
-			Key:     posterNotReadyKey,
-			Summary: "Poster is ready again",
-			Details: "The cached X session check is healthy again.",
-		})
-	} else {
-		if a.posterNotReadySince.IsZero() {
-			a.posterNotReadySince = now
-		}
-		if now.Sub(a.posterNotReadySince) >= a.cfg.PosterNotReadyAfter {
-			details := fmt.Sprintf("The poster has not been ready since %s. Error: %v", a.posterNotReadySince.UTC().Format(time.RFC3339), err)
-			a.alerts.Alert(notify.Event{Key: posterNotReadyKey, Summary: "Poster is not ready", Details: details})
-		}
+	} else if a.posterNotReadySince.IsZero() {
+		a.posterNotReadySince = now
+	}
+	if err != nil && now.Sub(a.posterNotReadySince) >= a.cfg.PosterNotReadyAfter {
+		summaries = append(summaries, "Poster is not ready")
+		details = append(details, fmt.Sprintf("The poster has not been ready since %s. Error: %v", a.posterNotReadySince.UTC().Format(time.RFC3339), err))
 	}
 
 	snapshot := a.status.Snapshot()
@@ -990,16 +985,24 @@ func (a *app) evaluateOperationalAlerts(ctx context.Context) {
 		lastPoll = *snapshot.LastSuccessfulPoll
 	}
 	if now.Sub(lastPoll) >= a.cfg.PollStaleAfter {
-		a.alerts.Alert(notify.Event{
-			Key:     pollStaleKey,
-			Summary: "Orchestrator polls are stale",
-			Details: fmt.Sprintf("No successful poll since %s.", lastPoll.UTC().Format(time.RFC3339)),
-		})
-	} else {
+		summaries = append(summaries, "Orchestrator polls are stale")
+		stale := fmt.Sprintf("No successful poll since %s.", lastPoll.UTC().Format(time.RFC3339))
+		if snapshot.LastPollError != "" {
+			stale += " Last error: " + snapshot.LastPollError
+		}
+		details = append(details, stale)
+	}
+
+	switch {
+	case len(summaries) > 0:
+		// A condition that starts during an active alert shows up in its reminder.
+		a.alerts.Alert(notify.Event{Key: operationalKey, Summary: strings.Join(summaries, "; "), Details: strings.Join(details, "\n")})
+	case err == nil:
+		// A poster that is not ready keeps an active alert open, also before its own threshold.
 		a.alerts.Resolve(notify.Event{
-			Key:     pollStaleKey,
-			Summary: "Orchestrator polling recovered",
-			Details: "A poll completed successfully again.",
+			Key:     operationalKey,
+			Summary: "Poster and polling recovered",
+			Details: "The poster is ready and polls succeed again.",
 		})
 	}
 }

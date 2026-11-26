@@ -5,7 +5,8 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"slices"
+	"path/filepath"
+	"strings"
 	"testing"
 	"testing/synctest"
 	"time"
@@ -44,61 +45,102 @@ func graphMailHandler(t *testing.T, receive func(subject, body string)) http.Han
 	}
 }
 
-func TestOperationalAlertsFollowFailureAndRecovery(t *testing.T) {
+func TestOperationalAlertsCoverOneOutageWithItsCause(t *testing.T) {
 	// Replace HTTP only; keep real alert delivery. The global override forbids t.Parallel.
 	original := http.DefaultTransport
 	t.Cleanup(func() { http.DefaultTransport = original })
 	synctest.Test(t, func(t *testing.T) {
-		ready := false
-		subjects := []string{}
-		graph := graphMailHandler(t, func(subject, _ string) { subjects = append(subjects, subject) })
+		ready, feedUp := false, true
+		var mails []string
+		graph := graphMailHandler(t, func(subject, body string) { mails = append(mails, subject+"\n"+body) })
 		// In-memory HTTP keeps all requests inside the synctest bubble.
 		server := httptest.NewTestServer(t, http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if r.Host == "poster.invalid" {
+			switch r.Host {
+			case "poster.invalid":
 				testutil.Equal(t, r.URL.Path, "/ready")
 				if !ready {
-					w.WriteHeader(http.StatusServiceUnavailable)
+					http.Error(w, `{"loggedIn":false}`, http.StatusServiceUnavailable)
+					return
 				}
-				return
+			case "feed.invalid":
+				if !feedUp {
+					http.Error(w, "feed down", http.StatusBadGateway)
+					return
+				}
+				writeFeed(t, w, nil)
+			default:
+				graph(w, r)
 			}
-			graph(w, r)
 		}))
 		http.DefaultTransport = server.Client().Transport
+		store, err := state.Load(filepath.Join(t.TempDir(), "state.json"))
+		testutil.NoError(t, err)
 		cfg := &config.Config{
-			PosterNotReadyAfter: 5 * time.Minute, PollStaleAfter: 10 * time.Minute,
+			FeedURL: "https://feed.invalid/feed", PosterNotReadyAfter: 5 * time.Minute, PollStaleAfter: 10 * time.Minute,
 			Graph: config.GraphConfig{TenantID: "offline", ClientID: "offline", ClientSecret: "offline",
 				FromAddress: "sender@example.invalid", Recipients: []string{"ops@example.invalid"}},
 		}
-		a := &app{cfg: cfg, now: time.Now, startedAt: time.Now(), poster: poster.New("https://poster.invalid"),
-			status: operational.New(time.Hour), alerts: notify.New(&cfg.Graph, 24*time.Hour)}
+		a := &app{cfg: cfg, now: time.Now, startedAt: time.Now(), store: store, http: server.Client(),
+			poster: poster.New("https://poster.invalid"), status: operational.New(time.Hour),
+			alerts: notify.New(&cfg.Graph, 24*time.Hour)}
 		defer a.alerts.Close()
-		a.status.RecordPoll(time.Now())
-		check := func(want ...string) {
+		poll := func(wantErr string) {
+			t.Helper()
+			if err := a.pollAndReport(t.Context()); wantErr == "" {
+				testutil.NoError(t, err)
+			} else {
+				testutil.ErrorContains(t, err, wantErr)
+			}
+		}
+		check := func(want ...[]string) {
 			t.Helper()
 			a.evaluateOperationalAlerts(t.Context())
 			synctest.Wait()
-			if !slices.Equal(subjects, want) {
-				t.Fatalf("mail subjects = %v, want %v", subjects, want)
+			for i, lines := range want {
+				if i >= len(mails) {
+					t.Fatalf("mails = %q, want %d", mails, len(want))
+				}
+				for _, line := range lines {
+					if !strings.Contains(mails[i], line) {
+						t.Errorf("mail %d = %q, want %q", i, mails[i], line)
+					}
+				}
 			}
+			if len(mails) != len(want) {
+				t.Fatalf("mails = %q, want %d", mails, len(want))
+			}
+			mails = nil
 		}
-		const suffix = " - ZuidWest X Poster"
-		posterAlert := "[ALERT] Poster is not ready" + suffix
-		pollAlert := "[ALERT] Orchestrator polls are stale" + suffix
-		posterRecovery := "[RECOVERED] Poster is ready again" + suffix
-		pollRecovery := "[RECOVERED] Orchestrator polling recovered" + suffix
+		const recovered = "[RECOVERED] Poster and polling recovered"
+
+		// The poster fails first; stale polls join the same alert.
+		poll("")
 		check()
 		time.Sleep(5*time.Minute - time.Nanosecond)
 		check()
 		time.Sleep(time.Nanosecond)
-		check(posterAlert)
-		check(posterAlert)
+		check([]string{"[ALERT] Poster is not ready", `Error: poster readiness returned 503 Service Unavailable: {"loggedIn":false}`})
 		time.Sleep(5 * time.Minute)
-		check(posterAlert, pollAlert)
+		check()
 		ready = true
-		check(posterAlert, pollAlert, posterRecovery)
-		a.status.RecordPoll(time.Now())
-		check(posterAlert, pollAlert, posterRecovery, pollRecovery)
-		check(posterAlert, pollAlert, posterRecovery, pollRecovery)
+		check()
+		poll("")
+		check([]string{recovered})
+
+		// Polls fail first and the mail says why. A poster that is not ready, even for less than
+		// its threshold, keeps the alert open after polls recover.
+		feedUp = false
+		poll("502 Bad Gateway")
+		time.Sleep(10 * time.Minute)
+		check([]string{"[ALERT] Orchestrator polls are stale", "Last error: fetch feed", "502 Bad Gateway"})
+		ready = false
+		time.Sleep(5 * time.Minute)
+		check()
+		feedUp = true
+		poll("")
+		check()
+		ready = true
+		check([]string{recovered})
 	})
 }
 
