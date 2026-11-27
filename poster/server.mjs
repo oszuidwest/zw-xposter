@@ -252,15 +252,20 @@ function acknowledgeNotice(page) {
     'acknowledged an X notice');
 }
 
+// Throws when the page shows neither, so only a clear logout leads to a new login.
 async function isLoggedIn(page) {
   await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-  const nav = page.locator('[data-testid="SideNav_AccountSwitcher_Button"]');
-  const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"]');
-  await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
+  // X's new web client has no test IDs; its account button holds the avatar with the handle as alt text.
+  // Logged out, it redirects /home to a landing page that links to its onboarding flow.
+  const account = page.locator(`[data-testid="SideNav_AccountSwitcher_Button"], button img[alt="@${USERNAME}" i]`).filter({ visible: true });
+  const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"], a[href^="/i/jf/onboarding/web?mode=login"]').filter({ visible: true });
+  await account.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
   // The banner renders a moment after the page.
   await settle(1000, 2000);
   await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
-  return nav.isVisible();
+  if (await account.count()) return true;
+  if (await login.count()) return false;
+  throw new Error(`session unclear: neither the account nor a login prompt on ${page.url()} (screenshot: ${await screenshot(page, 'session')})`);
 }
 
 async function checkSession(page) {
