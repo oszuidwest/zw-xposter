@@ -15,7 +15,7 @@ import { setInterval } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
-import { debugHTML, pruneScreenshots } from './debug.mjs';
+import { pruneScreenshots } from './debug.mjs';
 import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText, waitForPostResponse } from './media.mjs';
 import { prepareSubtitles } from './subtitles.mjs';
 import {
@@ -172,12 +172,22 @@ function withoutReplyCard(route) {
   return route.fallback({ postData: body });
 }
 
+// React copies typed text into an input's value attribute, so the saved copy of the page drops all of them.
+function pageHTML() {
+  const root = document.documentElement.cloneNode(true);
+  for (const input of root.querySelectorAll('input')) {
+    for (const attr of [...input.attributes]) if (attr.localName === 'value') input.removeAttributeNode(attr);
+  }
+  return root.outerHTML;
+}
+
 async function screenshot(page, name) {
   const file = path.join(DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${name}.png`);
   await page.screenshot({ path: file }).catch(() => {});
-  // page.content() has no timeout and never returns while the page's script is busy.
-  const html = await Promise.race([page.content(), sleep(10_000, '', { ref: false })]).catch(() => '');
-  if (html) await fs.writeFile(file.replace(/\.png$/, '.html'), debugHTML(page.url(), html)).catch(() => {});
+  // page.evaluate() has no timeout and does not return while the page's script is busy.
+  const html = await Promise.race([page.evaluate(pageHTML), sleep(10_000, '', { ref: false })]).catch(() => '');
+  if (!html) log('page HTML not saved: no page content within 10 seconds, or the capture failed');
+  else await fs.writeFile(file.replace(/\.png$/, '.html'), `<!-- ${page.url()} -->\n${html.slice(0, 5_000_000)}`).catch((err) => log('page HTML not saved:', err.message));
   return file;
 }
 
