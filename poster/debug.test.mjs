@@ -26,5 +26,6 @@ test('screenshot pruning removes only files older than the retention period', as
 test('debug HTML starts with the URL and drops input values', () => {
   const html = debugHTML('https://x.com/i/flow/login', '<p value="kept"><input name="a>b" type="password" value="hunter2" autocomplete="x">');
   assert.equal(html, '<!-- https://x.com/i/flow/login -->\n<p value="kept"><input name="a>b" type="password" autocomplete="x">');
+  assert.equal(debugHTML('u', '<input placeholder="Enter value=" value="hunter2">'), '<!-- u -->\n<input placeholder="Enter value=">');
   assert.equal(debugHTML('u', 'x'.repeat(6_000_000)).length, '<!-- u -->\n'.length + 5_000_000);
 });
