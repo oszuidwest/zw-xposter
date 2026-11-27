@@ -172,9 +172,22 @@ function withoutReplyCard(route) {
   return route.fallback({ postData: body });
 }
 
+// React copies typed text into an input's value attribute, so the saved copy of the page drops all of them.
+function pageHTML() {
+  const root = document.documentElement.cloneNode(true);
+  for (const input of root.querySelectorAll('input')) {
+    for (const attr of [...input.attributes]) if (attr.localName === 'value') input.removeAttributeNode(attr);
+  }
+  return root.outerHTML;
+}
+
 async function screenshot(page, name) {
   const file = path.join(DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${name}.png`);
   await page.screenshot({ path: file }).catch(() => {});
+  // page.evaluate() has no timeout and does not return while the page's script is busy.
+  const html = await Promise.race([page.evaluate(pageHTML), sleep(10_000, '', { ref: false })]).catch(() => '');
+  if (!html) log('page HTML not saved: no page content within 10 seconds, or the capture failed');
+  else await fs.writeFile(file.replace(/\.png$/, '.html'), `<!-- ${page.url()} -->\n${html.slice(0, 5_000_000)}`).catch((err) => log('page HTML not saved:', err.message));
   return file;
 }
 

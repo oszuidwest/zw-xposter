@@ -1,7 +1,7 @@
 // Run explicitly (or through container/test.sh); the unit suite needs no browser.
 import assert from 'node:assert/strict';
 import { once } from 'node:events';
-import { mkdtempDisposable } from 'node:fs/promises';
+import { mkdtempDisposable, readFile } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
@@ -13,7 +13,7 @@ const loginPage = `<input name="username_or_email">
     if (event.key !== 'Enter') return;
     document.body.innerHTML = '<input name="password">';
     document.querySelector('input').addEventListener('keydown', (event) => {
-      if (event.key === 'Enter') document.body.innerHTML = '<h1>We hebben je een beveiligingscode gestuurd</h1><input name="text">';
+      if (event.key === 'Enter') document.body.innerHTML = '<h1>We hebben je een beveiligingscode gestuurd</h1><input name="text" value="typed-code">';
     });
   });
 </script>`;
@@ -80,7 +80,12 @@ test('the session check logs in again only after a clear logout; a login code sc
 
   const start = Date.now();
   const code = /X asks for a code after the password/;
-  assert.match((await recent()).error, code);
+  const { error } = await recent();
+  assert.match(error, code);
+  // Each screenshot gets the page HTML next to it, headed by the page URL and without typed input values.
+  const html = await readFile(error.match(/screenshot: (\S+)\.png/)[1] + '.html', 'utf8');
+  assert.match(html, /^<!-- https:\/\/x\.com\/i\/flow\/login -->\n<html>/);
+  assert.doesNotMatch(html, /typed-code/);
   assert.equal(logins, 1);
   const status = await ready();
   assert.equal(status.loginCodeRequested, true);
