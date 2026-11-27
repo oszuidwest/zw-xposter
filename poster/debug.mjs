@@ -12,7 +12,8 @@ export async function pruneScreenshots(directory, { now = Date.now(), retentionM
 const MAX_HTML_CHARS = 5_000_000;
 
 // React copies typed text into the value attribute, so page.content() would hold the password.
+// Chromium escapes < in attribute values, so a tag never spans one; stopping there keeps the scan linear.
 export function debugHTML(url, html) {
-  const safe = html.replace(/<input\b(?:[^>"]|"[^"]*")*>/g, (tag) => tag.replace(/"[^"]*"|\svalue="[^"]*"/g, (match) => (match.startsWith('"') ? match : '')));
+  const safe = html.replace(/(<input\b(?:[^<>"]|"[^<"]*")*?)\svalue="[^"]*"/g, '$1');
   return `<!-- ${url} -->\n${safe.slice(0, MAX_HTML_CHARS)}`;
 }

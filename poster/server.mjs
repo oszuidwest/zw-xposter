@@ -176,7 +176,7 @@ async function screenshot(page, name) {
   const file = path.join(DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${name}.png`);
   await page.screenshot({ path: file }).catch(() => {});
   // page.content() has no timeout and never returns while the page's script is busy.
-  const html = await Promise.race([page.content(), sleep(10_000, '')]).catch(() => '');
+  const html = await Promise.race([page.content(), sleep(10_000, '', { ref: false })]).catch(() => '');
   if (html) await fs.writeFile(file.replace(/\.png$/, '.html'), debugHTML(page.url(), html)).catch(() => {});
   return file;
 }
