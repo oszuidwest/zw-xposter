@@ -35,13 +35,16 @@ test('the session check logs in again only after a clear logout; a login code sc
     if (server.listening) await server[Symbol.asyncDispose]();
   });
   const context = cleanup.use(await poster.launch());
-  // X's new web client (2026-11-27): no test IDs; the account button holds the avatar with the handle as alt text.
-  let home = '<button aria-label="Accountmenu"><img alt="@Fixture_Account" width="40" height="40"></button>';
+  // X's new web client (2026-11-27): almost no test IDs; the account button holds the avatar with the handle as alt text.
+  const signedIn = '<button aria-label="Accountmenu"><img alt="@Fixture_Account" width="40" height="40"></button>';
+  let home = signedIn;
+  let tokenWorks = false;
   let logins = 0;
-  await context.route('**/*', (route) => {
+  const hasToken = async () => (await context.cookies()).some((cookie) => cookie.name === 'auth_token');
+  await context.route('**/*', async (route) => {
     const url = new URL(route.request().url());
     if (url.hostname !== 'x.com') return route.abort();
-    if (url.pathname === '/home') return route.fulfill({ contentType: 'text/html', body: home });
+    if (url.pathname === '/home') return route.fulfill({ contentType: 'text/html', body: tokenWorks && (await hasToken()) ? signedIn : home });
     if (url.pathname === '/fixture_account') return route.fulfill({ contentType: 'text/html', body: '' });
     if (url.pathname === '/i/flow/login') {
       logins++;
@@ -61,11 +64,19 @@ test('the session check logs in again only after a clear logout; a login code sc
   // A page without a visible account button or login prompt touches neither token nor password,
   // even with hidden copies of both and the account's avatar elsewhere, as on a post.
   home = '<header hidden><button><img alt="@fixture_account"></button><a href="/login">Inloggen</a></header><main><img alt="@fixture_account" width="40" height="40"></main>';
-  assert.match((await recent()).error, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home/);
+  assert.match((await recent()).error, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home.*\(screenshot: /);
   assert.equal((await ready()).loggedIn, false);
-  assert.ok(!(await context.cookies()).some((cookie) => cookie.name === 'auth_token'));
-  // Logged out, the new client redirects /home to a landing page with this link.
+  // Contradicting signals are unclear too, and a page that stays unclear gets no new screenshot.
+  home = '<button><img alt="@fixture_account"></button><a href="/login">Inloggen</a>';
+  assert.match((await recent()).error, /^session unclear: both the account and a login prompt on [^(]*$/);
+  assert.equal(await hasToken(), false);
+  // Logged out, the new client redirects /home to a landing page with this link; the fixture serves it at /home.
   home = '<a href="/i/jf/onboarding/web?mode=login&amp;redirect_after_login=%2F">Inloggen</a>';
+  // A clear logout restores X_AUTH_TOKEN before any password login.
+  tokenWorks = true;
+  await recent();
+  assert.equal((await ready()).loggedIn, true);
+  tokenWorks = false;
 
   const start = Date.now();
   const code = /X asks for a code after the password/;
