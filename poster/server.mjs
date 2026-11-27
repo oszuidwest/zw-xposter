@@ -15,7 +15,7 @@ import { setInterval } from 'node:timers';
 import { setTimeout as sleep } from 'node:timers/promises';
 import { chromium } from 'playwright-core';
 import xUI from './x-ui.json' with { type: 'json' };
-import { pruneScreenshots } from './debug.mjs';
+import { debugHTML, pruneScreenshots } from './debug.mjs';
 import { ANY_ATTACHMENT, ATTACHMENT, CAPTION_ATTACHED, MAX_VIDEO_BYTES, receiveVideo, uploadImage, uploadSubtitles, uploadVideo, videoPostText, waitForPostResponse } from './media.mjs';
 import { prepareSubtitles } from './subtitles.mjs';
 import {
@@ -175,6 +175,9 @@ function withoutReplyCard(route) {
 async function screenshot(page, name) {
   const file = path.join(DEBUG_DIR, `${new Date().toISOString().replace(/[:.]/g, '-')}-${name}.png`);
   await page.screenshot({ path: file }).catch(() => {});
+  // page.content() has no timeout and never returns while the page's script is busy.
+  const html = await Promise.race([page.content(), sleep(10_000, '')]).catch(() => '');
+  if (html) await fs.writeFile(file.replace(/\.png$/, '.html'), debugHTML(page.url(), html)).catch(() => {});
   return file;
 }
 

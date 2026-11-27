@@ -8,3 +8,11 @@ export async function pruneScreenshots(directory, { now = Date.now(), retentionM
     if ((await fs.stat(file)).mtimeMs < cutoff) await fs.rm(file, { force: true });
   }
 }
+
+const MAX_HTML_CHARS = 5_000_000;
+
+// React copies typed text into the value attribute, so page.content() would hold the password.
+export function debugHTML(url, html) {
+  const safe = html.replace(/<input\b(?:[^>"]|"[^"]*")*>/g, (tag) => tag.replace(/\svalue="[^"]*"/g, ''));
+  return `<!-- ${url} -->\n${safe.slice(0, MAX_HTML_CHARS)}`;
+}

@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 
-import { pruneScreenshots } from './debug.mjs';
+import { debugHTML, pruneScreenshots } from './debug.mjs';
 
 test('screenshot pruning removes only files older than the retention period', async () => {
   await using directory = await fs.mkdtempDisposable(path.join(os.tmpdir(), 'xposter-debug-'));
@@ -21,4 +21,10 @@ test('screenshot pruning removes only files older than the retention period', as
 
   await assert.rejects(fs.lstat(oldFile), { code: 'ENOENT' });
   assert.equal(await fs.readFile(recentFile, 'utf8'), 'recent');
+});
+
+test('debug HTML starts with the URL and drops input values', () => {
+  const html = debugHTML('https://x.com/i/flow/login', '<p value="kept"><input name="a>b" type="password" value="hunter2" autocomplete="x">');
+  assert.equal(html, '<!-- https://x.com/i/flow/login -->\n<p value="kept"><input name="a>b" type="password" autocomplete="x">');
+  assert.equal(debugHTML('u', 'x'.repeat(6_000_000)).length, '<!-- u -->\n'.length + 5_000_000);
 });
