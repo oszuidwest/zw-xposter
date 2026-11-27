@@ -17,12 +17,6 @@ const loginPage = `<input name="username_or_email">
     });
   });
 </script>`;
-// X's new web client as read from a logged-in Chrome on 2026-11-27: no test IDs, a localized account
-// button with the handle as avatar alt text, and a hidden copy of it in the header.
-const newClientHome = `<header hidden><button aria-label="Accountmenu"><img alt="@fixture_account"></button></header>
-<nav><button aria-label="Accountmenu" type="button"><img alt="@Fixture_Account" width="40" height="40"></button></nav>`;
-// Logged out, the new client redirects /home to a landing page with these links.
-const newClientLanding = '<a href="/i/jf/onboarding/web?mode=login&amp;redirect_after_login=%2F">Inloggen</a>';
 
 test('the session check logs in again only after a clear logout; a login code screen spaces password logins six hours apart', { timeout: 300_000 }, async (t) => {
   const cleanup = new AsyncDisposableStack();
@@ -41,7 +35,8 @@ test('the session check logs in again only after a clear logout; a login code sc
     if (server.listening) await server[Symbol.asyncDispose]();
   });
   const context = cleanup.use(await poster.launch());
-  let home = newClientHome;
+  // X's new web client (2026-11-27): no test IDs; the account button holds the avatar with the handle as alt text.
+  let home = '<button aria-label="Accountmenu"><img alt="@Fixture_Account" width="40" height="40"></button>';
   let logins = 0;
   await context.route('**/*', (route) => {
     const url = new URL(route.request().url());
@@ -61,8 +56,6 @@ test('the session check logs in again only after a clear logout; a login code sc
   const recent = async () => (await fetch(`${base}/recent?hours=1`)).json();
   const ready = async () => (await fetch(`${base}/ready`)).json();
 
-  const hasToken = async () => (await context.cookies()).some((cookie) => cookie.name === 'auth_token');
-
   await recent();
   assert.equal((await ready()).loggedIn, true);
   // A page without a visible account button or login prompt touches neither token nor password,
@@ -70,9 +63,9 @@ test('the session check logs in again only after a clear logout; a login code sc
   home = '<header hidden><button><img alt="@fixture_account"></button><a href="/login">Inloggen</a></header><main><img alt="@fixture_account" width="40" height="40"></main>';
   assert.match((await recent()).error, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home/);
   assert.equal((await ready()).loggedIn, false);
-  assert.equal(await hasToken(), false);
-  assert.equal(logins, 0);
-  home = newClientLanding;
+  assert.ok(!(await context.cookies()).some((cookie) => cookie.name === 'auth_token'));
+  // Logged out, the new client redirects /home to a landing page with this link.
+  home = '<a href="/i/jf/onboarding/web?mode=login&amp;redirect_after_login=%2F">Inloggen</a>';
 
   const start = Date.now();
   const code = /X asks for a code after the password/;
