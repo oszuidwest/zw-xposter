@@ -268,11 +268,14 @@ async function isLoggedIn(page) {
   await settle(1000, 2000);
   await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
   const signedIn = (await account.count()) > 0;
-  if (signedIn !== (await login.count()) > 0) {
+  const signedOut = (await login.count()) > 0;
+  // The account is read again, so an avatar that renders between the reads makes the result unclear.
+  if (signedIn !== signedOut && signedIn === (await account.count()) > 0) {
     sessionUnclear = false;
     return signedIn;
   }
-  const shown = signedIn ? 'both the account and a login prompt' : 'neither the account nor a login prompt';
+  let shown = signedIn ? 'both the account and a login prompt' : 'neither the account nor a login prompt';
+  if (signedIn !== signedOut) shown = 'an account button that changed during the check';
   const shot = sessionUnclear ? '' : ` (screenshot: ${await screenshot(page, 'session')})`;
   sessionUnclear = true;
   throw new Error(`session unclear: ${shown} on ${page.url()}; not logging in again, X may have changed the page${shot}`);
