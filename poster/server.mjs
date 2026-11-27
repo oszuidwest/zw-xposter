@@ -252,15 +252,33 @@ function acknowledgeNotice(page) {
     'acknowledged an X notice');
 }
 
+// Polls retry every few minutes, so an unclear page gets one screenshot until the check is clear again.
+let sessionUnclear = false;
+
+// Throws unless the page shows either the account or a login prompt, so only a clear logout
+// leads to a token restore or a password login.
 async function isLoggedIn(page) {
   await page.goto('https://x.com/home', { waitUntil: 'domcontentloaded' });
-  const nav = page.locator('[data-testid="SideNav_AccountSwitcher_Button"]');
-  const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"]');
-  await nav.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
+  // X's new web client has almost no test IDs; its account button holds the avatar with the handle as alt text.
+  // Logged out, it redirects /home to a landing page that links to its onboarding flow.
+  const account = page.locator(`[data-testid="SideNav_AccountSwitcher_Button"], button img[alt="@${USERNAME}" i]`).filter({ visible: true });
+  const login = page.locator('input[name="username_or_email"], a[href="/login"], a[href="/i/flow/login"], a[href^="/i/jf/onboarding/web?mode=login"]').filter({ visible: true });
+  await account.or(login).first().waitFor({ timeout: 20_000 }).catch(() => {});
   // The banner renders a moment after the page.
   await settle(1000, 2000);
   await dismissOverlay(page, page.getByRole('button', { name: COOKIE_REFUSAL }), 'refused non-essential cookies');
-  return nav.isVisible();
+  const signedIn = (await account.count()) > 0;
+  const signedOut = (await login.count()) > 0;
+  // The account is read again, so an avatar that renders between the reads makes the result unclear.
+  if (signedIn !== signedOut && signedIn === (await account.count()) > 0) {
+    sessionUnclear = false;
+    return signedIn;
+  }
+  let shown = signedIn ? 'both the account and a login prompt' : 'neither the account nor a login prompt';
+  if (signedIn !== signedOut) shown = 'an account button that changed during the check';
+  const shot = sessionUnclear ? '' : ` (screenshot: ${await screenshot(page, 'session')})`;
+  sessionUnclear = true;
+  throw new Error(`session unclear: ${shown} on ${page.url()}; not logging in again, X may have changed the page${shot}`);
 }
 
 async function checkSession(page) {
