@@ -74,6 +74,8 @@ let loggedIn = false;
 let sessionCheckedAt = 0;
 let loginFailedAt = 0;
 let loginCodeRequested = false;
+// Error of the last failed ensureLoggedIn, so /ready says why the poster is not ready.
+let sessionError = null;
 let shuttingDown = false;
 
 // Serialize browser work so session checks and posts cannot navigate over each other.
@@ -365,6 +367,16 @@ async function login(page) {
 }
 
 async function ensureLoggedIn(page) {
+  try {
+    await restoreSession(page);
+    sessionError = null;
+  } catch (err) {
+    sessionError = err.message;
+    throw err;
+  }
+}
+
+async function restoreSession(page) {
   if (await checkSession(page)) {
     return;
   }
@@ -387,7 +399,7 @@ async function ensureLoggedIn(page) {
     }
     log('X_AUTH_TOKEN is not (or no longer) valid');
   }
-  if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
+  if (!PASSWORD) throw new Error('logged out and X_AUTH_TOKEN does not work; set a new X_AUTH_TOKEN and recreate the container');
   throwIfLoginBlocked();
   try {
     await login(page);
@@ -805,7 +817,7 @@ export const server = http.createServer(async (req, res) => {
       return send(res, 200, {});
     }
     if (req.method === 'GET' && url.pathname === '/ready') {
-      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil(), loginCodeRequested });
+      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil(), loginCodeRequested, sessionError });
       return send(res, status.ready ? 200 : 503, status.body);
     }
     if (req.method === 'GET' && url.pathname === '/recent') {

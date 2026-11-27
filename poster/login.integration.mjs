@@ -64,8 +64,9 @@ test('the session check logs in again only after a clear logout; a login code sc
   // A page without a visible account button or login prompt touches neither token nor password,
   // even with hidden copies of both and the account's avatar elsewhere, as on a post.
   home = '<header hidden><button><img alt="@fixture_account"></button><a href="/login">Inloggen</a></header><main><img alt="@fixture_account" width="40" height="40"></main>';
-  assert.match((await recent()).error, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home.*\(screenshot: /);
-  assert.equal((await ready()).loggedIn, false);
+  const unclear = (await recent()).error;
+  assert.match(unclear, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home.*\(screenshot: /);
+  assert.partialDeepStrictEqual(await ready(), { loggedIn: false, sessionError: unclear });
   // Contradicting signals are unclear too, and a page that stays unclear gets no new screenshot.
   home = '<button><img alt="@fixture_account"></button><a href="/login">Inloggen</a>';
   assert.match((await recent()).error, /^session unclear: both the account and a login prompt on [^(]*$/);
@@ -75,7 +76,7 @@ test('the session check logs in again only after a clear logout; a login code sc
   // A clear logout restores X_AUTH_TOKEN before any password login.
   tokenWorks = true;
   await recent();
-  assert.equal((await ready()).loggedIn, true);
+  assert.partialDeepStrictEqual(await ready(), { loggedIn: true, sessionError: null });
   tokenWorks = false;
 
   const start = Date.now();

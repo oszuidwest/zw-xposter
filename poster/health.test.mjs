@@ -21,6 +21,7 @@ test('readiness requires a recent successful session check without login backoff
     checkedAt: '2026-10-03T11:59:00.000Z',
     loginBlockedUntil: null,
     loginCodeRequested: false,
+    sessionError: null,
   });
 
   for (const [overrides, loginBlockedUntil] of [
@@ -41,15 +42,17 @@ test('readiness requires a recent successful session check without login backoff
   }
 });
 
-test('readiness reports that X asked for a login code', () => {
+test('readiness reports that X asked for a login code and why the session check failed', () => {
   const status = sessionHealth({
     loggedIn: false,
     checkedAt: now,
     blockedUntil: 0,
     loginCodeRequested: true,
+    sessionError: 'session unclear: neither the account nor a login prompt',
     now,
   });
   assert.equal(status.body.loginCodeRequested, true);
+  assert.equal(status.body.sessionError, 'session unclear: neither the account nor a login prompt');
 });
 
 test('session-check jitter stays between thirty and sixty minutes', () => {
