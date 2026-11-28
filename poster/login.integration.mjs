@@ -64,8 +64,9 @@ test('the session check logs in again only after a clear logout; a login code sc
   // A page without a visible account button or login prompt touches neither token nor password,
   // even with hidden copies of both and the account's avatar elsewhere, as on a post.
   home = '<header hidden><button><img alt="@fixture_account"></button><a href="/login">Inloggen</a></header><main><img alt="@fixture_account" width="40" height="40"></main>';
-  assert.match((await recent()).error, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home.*\(screenshot: /);
-  assert.equal((await ready()).loggedIn, false);
+  const unclear = (await recent()).error;
+  assert.match(unclear, /^session unclear: neither the account nor a login prompt on https:\/\/x\.com\/home.*\(screenshot: /);
+  assert.partialDeepStrictEqual(await ready(), { loggedIn: false, sessionError: unclear });
   // Contradicting signals are unclear too, and a page that stays unclear gets no new screenshot.
   home = '<button><img alt="@fixture_account"></button><a href="/login">Inloggen</a>';
   assert.match((await recent()).error, /^session unclear: both the account and a login prompt on [^(]*$/);
@@ -75,7 +76,7 @@ test('the session check logs in again only after a clear logout; a login code sc
   // A clear logout restores X_AUTH_TOKEN before any password login.
   tokenWorks = true;
   await recent();
-  assert.equal((await ready()).loggedIn, true);
+  assert.partialDeepStrictEqual(await ready(), { loggedIn: true, sessionError: null });
   tokenWorks = false;
 
   const start = Date.now();
@@ -88,13 +89,18 @@ test('the session check logs in again only after a clear logout; a login code sc
   assert.doesNotMatch(html, /typed-code/);
   assert.equal(logins, 1);
   const status = await ready();
+  assert.equal(status.sessionError, error);
   assert.equal(status.loginCodeRequested, true);
   const until = Date.parse(status.loginBlockedUntil);
   assert.ok(until >= start + 6 * 3600_000);
 
   // Past the ordinary 30-minute backoff, the poster still waits.
   t.mock.timers.enable({ apis: ['Date'], now: start + 31 * 60_000 });
-  assert.match((await recent()).error, /^logged out; X asks for a code after the password.*, next attempt in 3\d\d min$/);
+  // The backoff repeats the failed login's reason, and /ready keeps showing it.
+  const blocked = (await recent()).error;
+  assert.match(blocked, /; next attempt in 3\d\d min$/);
+  assert.ok(blocked.startsWith(`logged out; last login failed: ${error}; `));
+  assert.equal((await ready()).sessionError, blocked);
   assert.equal(logins, 1);
   // After six hours it tries once more, this time from the old client's logged-out page.
   home = '<a href="/login">Inloggen</a>';

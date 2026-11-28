@@ -54,7 +54,8 @@ const DEBUG_PRUNE_INTERVAL_MS = 24 * 3600_000;
 const LOGIN_RETRY_MS = 30 * 60_000;
 // Each password attempt that ends on X's code screen makes X mail another code.
 const LOGIN_CODE_RETRY_MS = 6 * 3600_000;
-const LOGIN_CODE_ADVICE = 'X asks for a code after the password; set a new X_AUTH_TOKEN and recreate the container';
+const NEW_TOKEN_ADVICE = 'set a new X_AUTH_TOKEN and recreate the container';
+const LOGIN_CODE_ADVICE = `X asks for a code after the password; ${NEW_TOKEN_ADVICE}`;
 // Must match poster.MaxLookbackHours in internal/poster/client.go.
 const MAX_RECENT_HOURS = 336;
 // Reserve response headroom within the Go client's 5/30-minute timeouts;
@@ -73,7 +74,11 @@ let tab;
 let loggedIn = false;
 let sessionCheckedAt = 0;
 let loginFailedAt = 0;
+// The backoff repeats why the last login failed.
+let loginError = '';
 let loginCodeRequested = false;
+// Error of the last ensureLoggedIn, or null when it succeeded, so /ready says why the poster is not ready.
+let sessionError = null;
 let shuttingDown = false;
 
 // Serialize browser work so session checks and posts cannot navigate over each other.
@@ -365,6 +370,16 @@ async function login(page) {
 }
 
 async function ensureLoggedIn(page) {
+  try {
+    await restoreSession(page);
+    sessionError = null;
+  } catch (err) {
+    sessionError = err.message;
+    throw err;
+  }
+}
+
+async function restoreSession(page) {
   if (await checkSession(page)) {
     return;
   }
@@ -387,13 +402,14 @@ async function ensureLoggedIn(page) {
     }
     log('X_AUTH_TOKEN is not (or no longer) valid');
   }
-  if (!PASSWORD) throw new Error('logged out and no X_PASSWORD to log in with');
+  if (!PASSWORD) throw new Error(`logged out and X_AUTH_TOKEN does not work; ${NEW_TOKEN_ADVICE}`);
   throwIfLoginBlocked();
   try {
     await login(page);
     if (!(await checkSession(page))) throw new Error(`still logged out after login (screenshot: ${await screenshot(page, 'session')})`);
   } catch (err) {
     loginFailedAt = Date.now();
+    loginError = err.message;
     throw err;
   }
 }
@@ -406,8 +422,7 @@ function loginBlockedUntil() {
 function throwIfLoginBlocked() {
   const wait = loginBlockedUntil() - Date.now();
   if (wait <= 0) return;
-  const reason = loginCodeRequested ? LOGIN_CODE_ADVICE : 'previous login failed';
-  throw new Error(`logged out; ${reason}, next attempt in ${Math.ceil(wait / 60_000)} min`);
+  throw new Error(`logged out; last login failed: ${loginError}; next attempt in ${Math.ceil(wait / 60_000)} min`);
 }
 
 async function runSessionChecks() {
@@ -805,7 +820,7 @@ export const server = http.createServer(async (req, res) => {
       return send(res, 200, {});
     }
     if (req.method === 'GET' && url.pathname === '/ready') {
-      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil(), loginCodeRequested });
+      const status = sessionHealth({ loggedIn, checkedAt: sessionCheckedAt, blockedUntil: loginBlockedUntil(), loginCodeRequested, sessionError });
       return send(res, status.ready ? 200 : 503, status.body);
     }
     if (req.method === 'GET' && url.pathname === '/recent') {
