@@ -98,8 +98,8 @@ test('the session check logs in again only after a clear logout; a login code sc
   t.mock.timers.enable({ apis: ['Date'], now: start + 31 * 60_000 });
   // The backoff repeats the failed login's reason, and /ready keeps showing it.
   const blocked = (await recent()).error;
-  assert.match(blocked, /, next attempt in 3\d\d min$/);
-  assert.ok(blocked.startsWith(`logged out; ${error}, `));
+  assert.match(blocked, /; next attempt in 3\d\d min$/);
+  assert.ok(blocked.startsWith(`logged out; last login failed: ${error}; `));
   assert.equal((await ready()).sessionError, blocked);
   assert.equal(logins, 1);
   // After six hours it tries once more, this time from the old client's logged-out page.

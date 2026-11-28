@@ -422,7 +422,7 @@ function loginBlockedUntil() {
 function throwIfLoginBlocked() {
   const wait = loginBlockedUntil() - Date.now();
   if (wait <= 0) return;
-  throw new Error(`logged out; ${loginError}, next attempt in ${Math.ceil(wait / 60_000)} min`);
+  throw new Error(`logged out; last login failed: ${loginError}; next attempt in ${Math.ceil(wait / 60_000)} min`);
 }
 
 async function runSessionChecks() {
